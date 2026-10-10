@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK (id=1), value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id=1), username TEXT NOT NULL CHECK (username='admin'), password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, csrf TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions(user_id);
+CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, registry TEXT NOT NULL, body BLOB NOT NULL, content_type TEXT NOT NULL, etag TEXT, last_modified TEXT, fetched_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS packages (id TEXT PRIMARY KEY, registry TEXT NOT NULL, name TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 0, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0, upstream_downloads INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, upstream_bytes INTEGER NOT NULL DEFAULT 0, client_bytes INTEGER NOT NULL DEFAULT 0, last_access INTEGER, UNIQUE(registry,name));
+CREATE TABLE IF NOT EXISTS user_package_stats (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, package_id TEXT NOT NULL REFERENCES packages(id), requests INTEGER NOT NULL DEFAULT 0, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0, upstream_downloads INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, upstream_bytes INTEGER NOT NULL DEFAULT 0, client_bytes INTEGER NOT NULL DEFAULT 0, last_access INTEGER, PRIMARY KEY(user_id,package_id));
+CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, package_id TEXT NOT NULL REFERENCES packages(id), registry TEXT NOT NULL, upstream_identity TEXT NOT NULL, version TEXT NOT NULL, filename TEXT NOT NULL, url TEXT NOT NULL, checksums TEXT NOT NULL, downloaded_at INTEGER, size INTEGER NOT NULL DEFAULT 0, content_type TEXT, is_sidecar INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS artifacts_package ON artifacts(package_id,version);
+CREATE INDEX IF NOT EXISTS artifacts_downloaded ON artifacts(registry,downloaded_at);
+CREATE INDEX IF NOT EXISTS metadata_registry ON metadata(registry);

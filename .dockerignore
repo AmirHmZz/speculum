@@ -1,0 +1,8 @@
+.git
+target
+data
+.env
+dashboard/node_modules
+dashboard/dist
+tests/.runtime
+*.log

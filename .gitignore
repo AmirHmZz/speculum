@@ -1,0 +1,8 @@
+/target/
+/data/
+/dashboard/node_modules/
+/dashboard/dist/
+*.tsbuildinfo
+/.env
+*.log
+/tests/.runtime/

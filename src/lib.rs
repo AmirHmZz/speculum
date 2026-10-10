@@ -1,0 +1,13 @@
+pub mod admin;
+pub mod app;
+pub mod auth;
+pub mod cache;
+pub mod config;
+pub mod db;
+pub mod error;
+pub mod registries;
+pub mod stats;
+pub mod user;
+pub mod web;
+pub use app::App;
+pub use web::router;

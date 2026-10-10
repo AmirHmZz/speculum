@@ -1,0 +1,24 @@
+services:
+  speculum:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      SPECULUM_LISTEN_IP: 0.0.0.0
+      SPECULUM_LISTEN_PORT: "8080"
+      RUST_LOG: speculum=info,tower_http=info
+    volumes:
+      - speculum-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+volumes:
+  speculum-data:
