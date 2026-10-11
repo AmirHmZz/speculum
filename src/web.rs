@@ -2,10 +2,10 @@ use crate::{App, admin, auth, registries, user};
 use axum::{
     Router,
     body::Body,
-    extract::{Request, State},
+    extract::{OriginalUri, Request, State},
     http::{Method, StatusCode},
     middleware,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
 };
 use std::sync::Arc;
@@ -58,11 +58,15 @@ pub fn router(app: Arc<App>) -> Router {
             auth::user_guard,
         ));
     let mirrors = Router::new()
+        .route("/pypi", get(mirror_root))
+        .route("/pypi/", get(mirror_root))
+        .route("/pypi/simple", get(mirror_root))
         .route("/pypi/simple/", get(registries::pypi::root))
         .route("/pypi/simple/{name}/", get(registries::pypi::project))
         .route("/pypi/simple/{name}", get(registries::pypi::project))
         .route("/pypi/files/{id}/{filename}", get(registries::pypi::file))
         .route("/npm/", get(registries::npm::root))
+        .route("/npm", get(mirror_root))
         .route("/npm/files/{id}/{filename}", get(npm_file))
         .route(
             "/npm/-/npm/v1/security/advisories/bulk",
@@ -74,6 +78,10 @@ pub fn router(app: Arc<App>) -> Router {
         )
         .route("/npm/{*path}", get(registries::npm::metadata))
         .route("/cargo/index/config.json", get(registries::cargo::config))
+        .route("/cargo", get(mirror_root))
+        .route("/cargo/", get(mirror_root))
+        .route("/cargo/index", get(mirror_root))
+        .route("/cargo/index/", get(mirror_root))
         .route("/cargo/index/{*path}", get(registries::cargo::index))
         .route(
             "/cargo/crates/{name}/{version}/download",
@@ -89,6 +97,7 @@ pub fn router(app: Arc<App>) -> Router {
         .nest("/api/user", user_routes)
         .route("/api/admin/login", post(auth::login))
         .route("/api/user/login", post(auth::user_login))
+        .route("/api/login", post(auth::dashboard_login))
         .route("/healthz", get(health))
         .merge(mirrors)
         .fallback(static_assets)
@@ -98,6 +107,18 @@ pub fn router(app: Arc<App>) -> Router {
             tracing::debug_span!("http_request", method=%request.method(), path=request.uri().path())
         }))
         .with_state(app)
+}
+async fn mirror_root(OriginalUri(uri): OriginalUri) -> Redirect {
+    let path = match uri.path() {
+        "/npm" => "/npm/",
+        "/pypi" | "/pypi/" | "/pypi/simple" => "/pypi/simple/",
+        _ => "/cargo/index/config.json",
+    };
+    let target = match uri.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_owned(),
+    };
+    Redirect::permanent(&target)
 }
 async fn registry_request_log(request: Request, next: middleware::Next) -> Response {
     let started = std::time::Instant::now();
@@ -143,6 +164,8 @@ async fn static_assets(request: Request) -> Response {
         || path.starts_with("admin/")
         || path == "account"
         || path.starts_with("account/")
+        || path == "login"
+        || path == "login/"
     {
         "index.html"
     } else {

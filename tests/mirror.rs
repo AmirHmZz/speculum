@@ -93,6 +93,16 @@ async fn fixture(State(state): State<Arc<Fixture>>, request: Request) -> Respons
         "/npm/demo" | "/npm/@scope%2Fdemo" | "/npm/%40scope%2Fdemo" => {
             json!({"name":"demo","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"name":"demo","version":"1.0.0","dist":{"tarball":format!("{}/files/demo.tgz",state.base),"shasum":format!("{:x}",sha1::Sha1::digest(b"fixture archive"))}}}})
         }
+        "/npm/react%2Dresizable%2Dpanels"
+        | "/npm/%40rolldown%2Fbinding%2Dlinux%2Dx64%2Dgnu"
+        | "/npm/pre%2Ddemo" => {
+            let (name, version) = match path {
+                "/npm/react%2Dresizable%2Dpanels" => ("react-resizable-panels", "4.12.2"),
+                "/npm/pre%2Ddemo" => ("pre-demo", "1.0.0-beta.1+build.7"),
+                _ => ("@rolldown/binding-linux-x64-gnu", "1.2.3"),
+            };
+            json!({"name":name,"versions":{version:{"name":name,"version":version,"dist":{"tarball":format!("{}/files/demo.tgz",state.base),"integrity":format!("sha512-{}",STANDARD.encode(sha2::Sha512::digest(b"fixture archive")))}}}})
+        }
         "/index/config.json" => {
             json!({"dl":format!("{}/files/{{crate}}-{{version}}.crate",state.base)})
         }
@@ -243,6 +253,378 @@ impl Harness {
         (cookie, body["csrf_token"].as_str().unwrap().into())
     }
 }
+#[tokio::test]
+async fn mirror_roots_redirect_without_trailing_slashes_and_preserve_authentication() {
+    let h = Harness::new(false).await;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for (path, target) in [
+        ("/npm", "/npm/"),
+        ("/pypi", "/pypi/simple/"),
+        ("/pypi/", "/pypi/simple/"),
+        ("/pypi/simple", "/pypi/simple/"),
+        ("/cargo", "/cargo/index/config.json"),
+        ("/cargo/", "/cargo/index/config.json"),
+        ("/cargo/index", "/cargo/index/config.json"),
+        ("/cargo/index/", "/cargo/index/config.json"),
+    ] {
+        for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+            let response = client
+                .request(method, format!("{}{path}?check=1", h.base))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 308, "{path}");
+            assert_eq!(response.headers()["location"], format!("{target}?check=1"));
+        }
+        assert_eq!(
+            h.client
+                .get(format!("{}{path}", h.base))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200,
+            "{path}"
+        );
+    }
+    let protected = Harness::new(true).await;
+    for path in ["/npm", "/pypi/simple", "/cargo/index"] {
+        assert_eq!(
+            client
+                .get(format!("{}{path}", protected.base))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+    }
+    let (_, _, token, _) = onboard_portal_user(&protected, "root-user").await;
+    assert_eq!(
+        protected
+            .client
+            .get(format!("{}/npm", protected.base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let mut settings = h.app.snapshot().await.settings;
+    settings.registries.get_mut("npm").unwrap().enabled = false;
+    h.app.save_settings(settings).await.unwrap();
+    assert_eq!(
+        client
+            .get(format!("{}/npm", h.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
+async fn shared_login_detects_roles_preserves_password_gates_and_limits_attempts() {
+    let h = Harness::new(true).await;
+    let (alice_id, temporary, _) = create_portal_user(&h, "alice").await;
+    let response = h
+        .client
+        .post(format!("{}/api/login", h.base))
+        .json(&json!({"username":"alice","password":temporary}))
+        .send()
+        .await
+        .unwrap();
+    let restricted = portal_session(response).await;
+    assert!(restricted.must_change);
+    assert_eq!(
+        portal_request(
+            &h,
+            "user",
+            "/summary",
+            reqwest::Method::GET,
+            None,
+            Some(&restricted)
+        )
+        .await
+        .status(),
+        403
+    );
+    // A mirror user may already have the same username as the administrator.
+    onboard_portal_user(&h, "admin").await;
+    for (username, password, role) in [
+        ("admin", "admin-password", "admin"),
+        ("admin", "admin-permanent-password", "user"),
+        ("alice", temporary.as_str(), "user"),
+    ] {
+        let response = h
+            .client
+            .post(format!("{}/api/login", h.base))
+            .json(&json!({"username":username,"password":password}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let cookie = response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["role"], role);
+        assert_eq!(
+            h.client
+                .get(format!("{}/api/{role}/session", h.base))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        let other = if role == "admin" { "user" } else { "admin" };
+        assert_eq!(
+            h.client
+                .get(format!("{}/api/{other}/session", h.base))
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+    }
+    sqlx::query("UPDATE users SET enabled=0 WHERE id=?")
+        .bind(alice_id)
+        .execute(&h.app.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.client
+            .post(format!("{}/api/login", h.base))
+            .json(&json!({"username":"alice","password":temporary}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        h.client
+            .post(format!("{}/api/login", h.base))
+            .json(&json!({"username":"admin","password":"admin-password","role":"admin"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        422
+    );
+    h.app.login_attempts.lock().unwrap().clear();
+    for _ in 0..10 {
+        assert_eq!(
+            h.client
+                .post(format!("{}/api/login", h.base))
+                .json(&json!({"username":"missing","password":"wrong-password"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+    }
+    assert_eq!(
+        h.client
+            .post(format!("{}/api/login", h.base))
+            .json(&json!({"username":"admin","password":"admin-password"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        429
+    );
+    h.clock.0.fetch_add(300, Ordering::SeqCst);
+    assert_eq!(
+        h.client
+            .post(format!("{}/api/login", h.base))
+            .json(&json!({"username":"admin","password":"admin-password"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn token_last_used_tracks_valid_requests_and_cascades_on_revocation() {
+    let h = Harness::new(true).await;
+    let (id, session, token, token_id) = onboard_portal_user(&h, "usage-user").await;
+    let unused: Value = portal_request(
+        &h,
+        "user",
+        "/tokens",
+        reqwest::Method::POST,
+        Some(json!({"name":"unused"})),
+        Some(&session),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let list: Value = portal_request(
+        &h,
+        "user",
+        "/tokens",
+        reqwest::Method::GET,
+        None,
+        Some(&session),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["last_used_at"].is_null())
+    );
+    assert_eq!(
+        h.client
+            .get(format!("{}/pypi/simple/demo/", h.base))
+            .basic_auth("wrong-user", Some(&token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        h.client
+            .get(format!("{}/pypi/simple/demo/", h.base))
+            .basic_auth("usage-user", Some(&token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    h.clock.0.fetch_add(60, Ordering::SeqCst);
+    assert_eq!(
+        h.client
+            .head(format!("{}/npm/-/ping", h.base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let used_at = h.app.now();
+    let list: Value = portal_request(
+        &h,
+        "user",
+        "/tokens",
+        reqwest::Method::GET,
+        None,
+        Some(&session),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    for row in list.as_array().unwrap() {
+        assert_eq!(
+            row["last_used_at"],
+            if row["id"] == token_id {
+                json!(used_at)
+            } else {
+                Value::Null
+            }
+        );
+    }
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == unused["id"])
+    );
+    sqlx::query("UPDATE users SET enabled=0 WHERE id=?")
+        .bind(&id)
+        .execute(&h.app.db)
+        .await
+        .unwrap();
+    h.clock.0.fetch_add(60, Ordering::SeqCst);
+    assert_eq!(
+        h.client
+            .get(format!("{}/npm/-/ping", h.base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let stored: i64 = sqlx::query_scalar("SELECT last_used_at FROM token_usage WHERE token_id=?")
+        .bind(&token_id)
+        .fetch_one(&h.app.db)
+        .await
+        .unwrap();
+    assert_eq!(stored, used_at);
+    sqlx::query("UPDATE users SET enabled=1 WHERE id=?")
+        .bind(&id)
+        .execute(&h.app.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        portal_request(
+            &h,
+            "user",
+            &format!("/tokens/{token_id}"),
+            reqwest::Method::DELETE,
+            None,
+            Some(&session)
+        )
+        .await
+        .status(),
+        204
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_usage WHERE token_id=?")
+        .bind(&token_id)
+        .fetch_one(&h.app.db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn token_usage_table_is_added_to_existing_databases_without_resetting_accounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open(dir.path()).await.unwrap();
+    sqlx::query("INSERT INTO users(id,username,password_hash,created_at) VALUES('existing','existing','fixture',1)")
+        .execute(&app.db).await.unwrap();
+    sqlx::query("INSERT INTO tokens(id,user_id,name,prefix,hash,created_at) VALUES('existing-token','existing','existing','spm_fixture','fixture',1)")
+        .execute(&app.db).await.unwrap();
+    sqlx::query("DROP TABLE token_usage")
+        .execute(&app.db)
+        .await
+        .unwrap();
+    app.db.close().await;
+    drop(app);
+    let app = App::open(dir.path()).await.unwrap();
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM users),(SELECT COUNT(*) FROM tokens),(SELECT COUNT(*) FROM token_usage)",
+    ).fetch_one(&app.db).await.unwrap();
+    assert_eq!(counts, (1, 1, 0));
+}
+
 #[tokio::test]
 async fn pypi_on_demand_head_ranges_checksums_and_statistics() {
     let h = Harness::new(false).await;
@@ -610,6 +992,174 @@ async fn admin_csrf_users_tokens_and_independent_registry_authentication() {
     );
     assert!(!h.upstream.seen_auth.load(Ordering::SeqCst));
 }
+#[tokio::test]
+async fn npm_standard_tarballs_resolve_cold_and_share_metadata_cache_artifacts() {
+    let h = Harness::new(false).await;
+    let cases = [
+        ("demo", "demo-1.0.0.tgz", "1.0.0"),
+        ("@scope/demo", "demo-1.0.0.tgz", "1.0.0"),
+        ("@scope%2Fdemo", "demo-1.0.0.tgz", "1.0.0"),
+        ("%40scope%2Fdemo", "demo-1.0.0.tgz", "1.0.0"),
+        (
+            "react-resizable-panels",
+            "react-resizable-panels-4.12.2.tgz",
+            "4.12.2",
+        ),
+        (
+            "@rolldown/binding-linux-x64-gnu",
+            "binding-linux-x64-gnu-1.2.3.tgz",
+            "1.2.3",
+        ),
+        (
+            "pre-demo",
+            "pre-demo-1.0.0-beta.1+build.7.tgz",
+            "1.0.0-beta.1+build.7",
+        ),
+    ];
+    for (name, filename, version) in cases {
+        let url = format!("{}/npm/{name}/-/{filename}", h.base);
+        let before = h.upstream.files.load(Ordering::SeqCst);
+        assert_eq!(h.client.head(&url).send().await.unwrap().status(), 200);
+        assert_eq!(h.upstream.files.load(Ordering::SeqCst), before);
+        let (one, two) = tokio::join!(h.client.get(&url).send(), h.client.get(&url).send());
+        for response in [one.unwrap(), two.unwrap()] {
+            assert_eq!(response.status(), 200, "{url}");
+            assert_eq!(response.text().await.unwrap(), "fixture archive");
+        }
+        let metadata: Value = h
+            .client
+            .get(format!("{}/npm/{name}", h.base))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let rewritten = metadata["versions"][version]["dist"]["tarball"]
+            .as_str()
+            .unwrap();
+        let partial = h
+            .client
+            .get(rewritten)
+            .header("range", "bytes=-7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(partial.status(), 206);
+        assert_eq!(partial.text().await.unwrap(), "archive");
+    }
+    assert_eq!(h.upstream.files.load(Ordering::SeqCst), 5);
+    let artifacts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifacts WHERE registry='npm'")
+        .fetch_one(&h.app.db)
+        .await
+        .unwrap();
+    assert_eq!(artifacts, 5);
+    // Cached archives remain usable even if upstream metadata is no longer available.
+    sqlx::query("DELETE FROM metadata")
+        .execute(&h.app.db)
+        .await
+        .unwrap();
+    h.upstream.offline.store(true, Ordering::SeqCst);
+    for (name, filename, _) in cases {
+        let response = h
+            .client
+            .get(format!("{}/npm/{name}/-/{filename}", h.base))
+            .header("range", "bytes=0-6")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.text().await.unwrap(), "fixture");
+    }
+    assert_eq!(h.upstream.files.load(Ordering::SeqCst), 5);
+    assert!(!h.upstream.seen_auth.load(Ordering::SeqCst));
+    let mut settings = h.app.snapshot().await.settings;
+    settings.registries.get_mut("npm").unwrap().upstream_url =
+        format!("{}/other/", h.upstream.base);
+    h.app.save_settings(settings).await.unwrap();
+    h.upstream.offline.store(false, Ordering::SeqCst);
+    assert_eq!(
+        h.client
+            .get(format!("{}/npm/demo/-/demo-1.0.0.tgz", h.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
+async fn npm_standard_tarballs_validate_paths_versions_and_checksums() {
+    let h = Harness::new(false).await;
+    for path in [
+        "demo/-/other-1.0.0.tgz",
+        "demo/-/demo-.tgz",
+        "demo/-/demo-1.0.0.zip",
+        "demo/-/demo-1.0.0.tgz/extra",
+        "demo/-/demo-1.0.0%2Fextra.tgz",
+    ] {
+        assert_eq!(
+            h.client
+                .get(format!("{}/npm/{path}", h.base))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404,
+            "{path}"
+        );
+    }
+    assert_eq!(h.upstream.metadata.load(Ordering::SeqCst), 0);
+    for path in ["demo/-/demo-9.0.0.tgz", "missing/-/missing-1.0.0.tgz"] {
+        assert_eq!(
+            h.client
+                .get(format!("{}/npm/{path}", h.base))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404,
+            "{path}"
+        );
+    }
+    assert_eq!(h.upstream.files.load(Ordering::SeqCst), 0);
+    h.upstream.bad_hash.store(true, Ordering::SeqCst);
+    let response = h
+        .client
+        .get(format!("{}/npm/demo/-/demo-1.0.0.tgz", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502);
+    assert!(
+        response
+            .text()
+            .await
+            .unwrap()
+            .contains("Artifact checksum mismatch")
+    );
+    assert_eq!(
+        std::fs::read_dir(h.app.dir.join("artifacts"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(std::fs::read_dir(h.app.dir.join("tmp")).unwrap().count(), 0);
+    let protected = Harness::new(true).await;
+    assert_eq!(
+        protected
+            .client
+            .get(format!("{}/npm/demo/-/demo-1.0.0.tgz", protected.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(protected.upstream.metadata.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn npm_scopes_cargo_downloads_and_cache_deletion_preserve_totals() {
     let h = Harness::new(false).await;
@@ -2255,6 +2805,11 @@ async fn token_prefixes_from_both_creation_paths_survive_restart_and_remain_priv
     .await
     .unwrap_err();
     assert_eq!(error.0, StatusCode::NOT_FOUND);
+    sqlx::query("INSERT INTO token_usage(token_id,last_used_at) VALUES(?,1700000000)")
+        .bind(user_token["id"].as_str().unwrap())
+        .execute(&app.db)
+        .await
+        .unwrap();
     app.db.close().await;
     drop(app);
     let app = App::open(dir.path()).await.unwrap();
@@ -2271,6 +2826,14 @@ async fn token_prefixes_from_both_creation_paths_survive_restart_and_remain_priv
             .find(|row| row["id"] == issued["id"])
             .unwrap();
         assert_eq!(row["prefix"], &issued["token"].as_str().unwrap()[..12]);
+        assert_eq!(
+            row["last_used_at"],
+            if row["id"] == user_token["id"] {
+                json!(1700000000)
+            } else {
+                Value::Null
+            }
+        );
         assert!(row.get("token").is_none() && row.get("hash").is_none());
     }
 }

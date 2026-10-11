@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import {
   Braces,
   ChevronRight,
-  CircleHelp,
   Database,
   LayoutDashboard,
   LogOut,
@@ -31,7 +30,9 @@ const pages = {
   settings: { label: 'Settings', icon: Settings2 },
 }
 export default function App() {
-  return window.location.pathname.startsWith('/account') ? <UserApp /> : <AdminApp />
+  if (window.location.pathname.startsWith('/account')) return <UserApp />
+  if (window.location.pathname.startsWith('/admin')) return <AdminApp />
+  return <Login />
 }
 function AdminApp() {
   const [username, setUsername] = useState<string | null>(null)
@@ -62,7 +63,7 @@ function AdminApp() {
     return () => window.removeEventListener('admin-session-expired', expire)
   }, [])
   if (checking) return <Loading />
-  if (!username) return <Login role="admin" onLogin={acceptSession} />
+  if (!username) return <Login />
   if (mustChange)
     return (
       <PasswordGate
@@ -84,7 +85,7 @@ function AdminApp() {
               <BrandIcon size={21} />
             </span>
             <span>
-              speculum<span className="brand-sub">PACKAGE MIRROR</span>
+              speculum
             </span>
           </a>
           <div className="nav-label">WORKSPACE</div>
@@ -165,9 +166,6 @@ function AdminApp() {
             <span>
               <Database size={12} /> Speculum <span className="footer-divider">/</span> On-demand
               package caching
-            </span>
-            <span>
-              <CircleHelp size={12} /> Configure your clients in Overview
             </span>
           </footer>
         </main>

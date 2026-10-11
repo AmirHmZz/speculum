@@ -18,7 +18,6 @@ export function Overview({ onPackages }: { onPackages: () => void }) {
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">YOUR MIRROR, AT A GLANCE</div>
           <h1>Overview</h1>
           <p>A local home for the packages your projects depend on.</p>
         </div>

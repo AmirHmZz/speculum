@@ -171,7 +171,12 @@ pub async fn dashboard_session(
     })
 }
 fn session_json(session: &DashboardSession) -> Value {
-    json!({"username":session.username,"csrf_token":session.csrf,"must_change_password":session.must_change_password})
+    let role = if session.user_id.is_some() {
+        "user"
+    } else {
+        "admin"
+    };
+    json!({"username":session.username,"csrf_token":session.csrf,"must_change_password":session.must_change_password,"role":role})
 }
 async fn cookie_header(app: &App, role: Role, value: &str) -> String {
     let secure = app
@@ -332,8 +337,20 @@ async fn token_user(app: &App, token: &str, username: Option<&str>) -> Option<St
     if token.len() < 32 || token.len() > 256 {
         return None;
     }
-    let row=sqlx::query("SELECT users.id,users.username FROM tokens JOIN users ON users.id=tokens.user_id WHERE tokens.hash=? AND users.enabled=1").bind(digest(token)).fetch_optional(&app.db).await.ok()??;
+    let row=sqlx::query("SELECT users.id,users.username,tokens.id AS token_id FROM tokens JOIN users ON users.id=tokens.user_id WHERE tokens.hash=? AND users.enabled=1").bind(digest(token)).fetch_optional(&app.db).await.ok()??;
     if username.is_none_or(|name| row.get::<String, _>("username") == name) {
+        if let Err(error) = sqlx::query(
+            "INSERT INTO token_usage(token_id,last_used_at) VALUES(?,?) \
+             ON CONFLICT(token_id) DO UPDATE SET last_used_at=excluded.last_used_at \
+             WHERE token_usage.last_used_at<excluded.last_used_at",
+        )
+        .bind(row.get::<String, _>("token_id"))
+        .bind(app.now())
+        .execute(&app.db)
+        .await
+        {
+            tracing::error!(%error, "Unable to record token usage");
+        }
         Some(row.get("id"))
     } else {
         None
@@ -346,9 +363,9 @@ pub struct Login {
     pub username: String,
     pub password: String,
 }
-fn throttle(app: &App, peer: SocketAddr, role: Role) -> Result<String> {
+fn throttle(app: &App, peer: SocketAddr, role: Option<Role>) -> Result<String> {
     let now = app.now();
-    let key = format!("{}:{}", role.path(), peer.ip());
+    let key = format!("{}:{}", role.map_or("/api/login", Role::path), peer.ip());
     let mut attempts = app.login_attempts.lock().unwrap();
     attempts.retain(|_, (_, start)| now.saturating_sub(*start) < 300);
     let entry = attempts.entry(key.clone()).or_insert((0, now));
@@ -361,16 +378,32 @@ fn throttle(app: &App, peer: SocketAddr, role: Role) -> Result<String> {
     entry.0 += 1;
     Ok(key)
 }
-async fn sign_in(app: Arc<App>, peer: SocketAddr, input: Login, role: Role) -> Result<Response> {
+async fn sign_in(
+    app: Arc<App>,
+    peer: SocketAddr,
+    input: Login,
+    role: Option<Role>,
+) -> Result<Response> {
     let key = throttle(&app, peer, role)?;
-    let row=match role {
-        Role::Admin=>sqlx::query("SELECT NULL AS user_id,username,password_hash,must_change_password FROM admin WHERE id=1 AND username=?").bind(&input.username).fetch_optional(&app.db).await?,
-        Role::User=>sqlx::query("SELECT id AS user_id,username,password_hash,must_change_password FROM users WHERE username=? AND enabled=1").bind(&input.username).fetch_optional(&app.db).await?,
-    }.ok_or_else(Error::unauthorized)?;
-    let hash: String = row.get("password_hash");
-    if !verify_password(input.password, hash.clone()).await {
-        return Err(Error::unauthorized());
+    let rows = match role {
+        Some(Role::Admin) => sqlx::query("SELECT NULL AS user_id,username,password_hash,must_change_password FROM admin WHERE id=1 AND username=?").bind(&input.username).fetch_all(&app.db).await?,
+        Some(Role::User) => sqlx::query("SELECT id AS user_id,username,password_hash,must_change_password FROM users WHERE username=? AND enabled=1").bind(&input.username).fetch_all(&app.db).await?,
+        None => sqlx::query("SELECT NULL AS user_id,username,password_hash,must_change_password FROM admin WHERE id=1 AND username=? UNION ALL SELECT id AS user_id,username,password_hash,must_change_password FROM users WHERE username=? AND enabled=1").bind(&input.username).bind(&input.username).fetch_all(&app.db).await?,
+    };
+    let mut matched = None;
+    for row in rows {
+        if verify_password(input.password.clone(), row.get("password_hash")).await {
+            matched = Some(row);
+            break;
+        }
     }
+    let row = matched.ok_or_else(Error::unauthorized)?;
+    let role = if row.get::<Option<String>, _>("user_id").is_some() {
+        Role::User
+    } else {
+        Role::Admin
+    };
+    let hash: String = row.get("password_hash");
     let value = random_secret()?;
     let csrf = random_secret()?;
     let mut session = DashboardSession {
@@ -413,14 +446,21 @@ pub async fn login(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(input): Json<Login>,
 ) -> Result<Response> {
-    sign_in(app, peer, input, Role::Admin).await
+    sign_in(app, peer, input, Some(Role::Admin)).await
 }
 pub async fn user_login(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(input): Json<Login>,
 ) -> Result<Response> {
-    sign_in(app, peer, input, Role::User).await
+    sign_in(app, peer, input, Some(Role::User)).await
+}
+pub async fn dashboard_login(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(input): Json<Login>,
+) -> Result<Response> {
+    sign_in(app, peer, input, None).await
 }
 pub async fn me(Extension(session): Extension<DashboardSession>) -> Json<Value> {
     Json(session_json(&session))

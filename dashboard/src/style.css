@@ -100,6 +100,7 @@
   }
 }
 .shell {
+  --page-padding: 38px;
   display: flex;
   min-height: 100vh;
 }
@@ -135,14 +136,6 @@
   height: 38px;
   border-radius: 10px;
   flex-shrink: 0;
-}
-.brand-sub {
-  display: block;
-  color: var(--muted-foreground);
-  font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 1.7px;
-  margin-top: 2px;
 }
 .nav-label {
   font-size: 10px;
@@ -240,7 +233,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 38px;
+  padding: 0 max(var(--page-padding), calc((100% - 1560px) / 2 + var(--page-padding)));
   background: var(--sidebar);
 }
 .topbar > span {
@@ -267,10 +260,10 @@
   color: var(--muted-foreground);
 }
 .content {
-  padding: 38px;
+  padding: 38px var(--page-padding);
   max-width: 1560px;
   width: 100%;
-  margin: auto;
+  margin: 0 auto;
   flex: 1;
 }
 .page-heading {
@@ -324,6 +317,13 @@ h1 {
 .stat-detail {
   color: var(--muted-foreground);
   font-size: 10px;
+}
+.stat-value,
+.stat-detail,
+.registry-metrics > div,
+.traffic-grid > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .section-heading {
   display: flex;
@@ -398,7 +398,7 @@ h2 {
 }
 .registry-metrics {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   padding: 4px 0 23px;
 }
@@ -879,7 +879,7 @@ footer {
   display: flex;
   justify-content: space-between;
   gap: 15px;
-  padding: 20px 38px;
+  padding: 20px max(var(--page-padding), calc((100% - 1560px) / 2 + var(--page-padding)));
   color: var(--muted-foreground);
   font-size: 10px;
 }
@@ -925,11 +925,17 @@ footer > span {
   font-size: 10px;
 }
 @media (min-width: 1500px) {
+  .shell {
+    --page-padding: 55px;
+  }
   .content {
-    padding: 45px 55px;
+    padding-block: 45px;
   }
 }
 @media (max-width: 1100px) {
+  .shell {
+    --page-padding: 28px;
+  }
   .user-overview {
     --registry-gap: 12px;
     --registry-padding: 18px;
@@ -942,10 +948,7 @@ footer > span {
     margin-left: 200px;
   }
   .content {
-    padding: 28px;
-  }
-  .topbar {
-    padding: 0 28px;
+    padding-block: 28px;
   }
   .stats-grid {
     gap: 12px;
@@ -1017,11 +1020,13 @@ footer > span {
   }
 }
 @media (max-width: 550px) {
+  .shell {
+    --page-padding: 17px;
+  }
   .content {
-    padding: 24px 17px;
+    padding-block: 24px;
   }
   .topbar {
-    padding: 0 17px;
     height: 58px;
   }
   .page-heading {
@@ -1063,9 +1068,6 @@ footer > span {
   }
   .tabs .registry-tag {
     display: none;
-  }
-  footer {
-    padding: 20px 17px;
   }
   .section-heading > .muted {
     display: none;

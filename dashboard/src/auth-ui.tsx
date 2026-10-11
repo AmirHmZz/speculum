@@ -1,28 +1,27 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { ChevronRight, LockKeyhole } from 'lucide-react'
-import { roleApi, post, put, type DashboardRole, type DashboardSession } from './api'
+import { signIn, roleApi, put, type DashboardRole, type DashboardSession } from './api'
 import { BrandIcon } from './components/brand-icon'
 import { Button } from './components/ui/button'
 import { Input } from './components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card'
 import { ErrorMessage, Field } from './common'
-export function Login({
-  role,
-  onLogin,
-}: {
-  role: DashboardRole
-  onLogin: (session: DashboardSession) => void
-}) {
-  const [username, setUsername] = useState(role === 'admin' ? 'admin' : '')
+export function Login() {
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    window.history.replaceState(null, '', '/login')
+    document.documentElement.classList.toggle('dark', localStorage.getItem('theme') === 'dark')
+  }, [])
   async function submit(event: FormEvent) {
     event.preventDefault()
     setBusy(true)
     setError('')
     try {
-      onLogin(await roleApi(role)<DashboardSession>('/login', post({ username, password })))
+      const session = await signIn(username, password)
+      window.location.replace(session.role === 'admin' ? '/admin' : '/account')
     } catch (error) {
       setError((error as Error).message)
     } finally {
@@ -36,15 +35,12 @@ export function Login({
           <BrandIcon />
         </span>
         <h1>speculum</h1>
-        <p>{role === 'admin' ? 'Your packages. Closer to home.' : 'Your access. Your activity.'}</p>
       </div>
       <Card className="login-card">
         <CardHeader>
           <CardTitle>Welcome back</CardTitle>
           <CardDescription>
-            {role === 'admin'
-              ? 'Sign in to manage your package mirror.'
-              : 'Sign in to manage your tokens and view your usage.'}
+            Sign in to your Speculum account.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -54,7 +50,6 @@ export function Login({
               <Input
                 autoComplete="username"
                 required
-                readOnly={role === 'admin'}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />
@@ -75,9 +70,6 @@ export function Login({
           </form>
         </CardContent>
       </Card>
-      <a className="text-sm muted" href={role === 'admin' ? '/account' : '/admin'}>
-        {role === 'admin' ? 'Mirror user sign in' : 'Administrator sign in'}
-      </a>
     </div>
   )
 }

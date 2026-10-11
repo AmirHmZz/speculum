@@ -19,12 +19,13 @@ pub async fn tokens(
     Extension(session): Extension<DashboardSession>,
 ) -> Result<Json<Value>> {
     let rows = sqlx::query(
-        "SELECT id,name,prefix,created_at FROM tokens WHERE user_id=? ORDER BY created_at,id",
+        "SELECT t.id,t.name,t.prefix,t.created_at,u.last_used_at FROM tokens t \
+         LEFT JOIN token_usage u ON u.token_id=t.id WHERE t.user_id=? ORDER BY t.created_at,t.id",
     )
     .bind(session.user_id)
     .fetch_all(&app.db)
     .await?;
-    Ok(Json(json!(rows.iter().map(|row|json!({"id":row.get::<String,_>("id"),"name":row.get::<String,_>("name"),"prefix":row.get::<String,_>("prefix"),"created_at":row.get::<i64,_>("created_at")})).collect::<Vec<_>>())))
+    Ok(Json(json!(rows.iter().map(|row|json!({"id":row.get::<String,_>("id"),"name":row.get::<String,_>("name"),"prefix":row.get::<String,_>("prefix"),"created_at":row.get::<i64,_>("created_at"),"last_used_at":row.get::<Option<i64>,_>("last_used_at")})).collect::<Vec<_>>())))
 }
 pub async fn create_token(
     State(app): State<Arc<App>>,

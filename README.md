@@ -44,10 +44,17 @@ their tokens, sessions, and personal statistics. Admins can still issue tokens
 for users. Password resets generate a new temporary password, require another
 password change, and sign out user sessions while preserving package tokens.
 
+Both dashboard roles sign in at `/login` using one form. Speculum detects the
+account role and redirects administrators to `/admin` and mirror users to
+`/account`, including when a password change is required.
+
 The user dashboard exposes only the signed-in user's token management and usage.
 Its `/api/user/` APIs provide login/session/logout, password changes, tokens,
 summary, paginated package activity, and public client configuration. Admin
 sessions and user sessions are separate; users cannot access `/api/admin/`.
+The Tokens table shows when each token last authenticated a mirror request,
+including metadata and HEAD requests. Unused tokens show **Never**. Invalid
+credentials and disabled users do not update this timestamp.
 
 **uv** — use a named index in `pyproject.toml`, with credentials in environment
 variables:
@@ -77,9 +84,17 @@ registry=https://mirror.example.com/npm/
 ```
 
 Scoped packages, exact versions, tags, full/abbreviated metadata, and npm audit
-requests are supported. npm login/publishing are not supported; issue tokens in
+requests are supported. Conventional tarball paths (`/npm/name/-/name-version.tgz`
+and `/npm/@scope/name/-/name-version.tgz`) resolve on demand and share the cache
+with metadata-generated download URLs, including requests from existing Bun
+lockfiles. npm login/publishing are not supported; issue tokens in
 the dashboard. Existing lockfiles that contain direct upstream tarball URLs can
 bypass the mirror: regenerate those lockfiles using the mirror registry.
+
+Mirror roots also accept URLs without a trailing slash. `/npm` and
+`/pypi/simple` redirect to their canonical roots; `/cargo/index` redirects to
+the sparse registry's `config.json`. Authentication and registry settings
+apply to these aliases.
 
 **Bun** — use the same npm endpoint. Put this in `bunfig.toml` at the project
 root, set `SPECULUM_TOKEN` to a mirror-user token, and run `bun install`:
@@ -197,8 +212,10 @@ preserve history. Upstream downloads and bytes belong to the requesting user who
 performs the fetch; waiting users are counted only for their own requests and
 delivered bytes. Deleting a user preserves global traffic totals.
 
-Speculum does not run database migrations. Schema changes require a fresh
-application database.
+Speculum does not run database migrations. Changes to existing table schemas
+require a fresh application database. Token usage is stored in a separate
+table created automatically at startup, so enabling this feature preserves
+existing users and tokens.
 
 ## Local development and checks
 
@@ -233,10 +250,11 @@ bun run build
 ```
 
 `tests/native_clients.py` generates valid wheel/tarball/crate fixtures, installs
-them with real uv/npm/Cargo clients and isolated caches, then repeats the installs
-with upstream unavailable. It checks dependencies, npm scopes, authenticated
-Cargo source replacement, credential isolation, and absence of unrelated cached
-versions. Run it after `cargo build`, using an existing Python interpreter:
+them with real uv/npm/Bun/Cargo clients and isolated caches, then repeats the
+installs with upstream unavailable. It checks dependencies, npm scopes, Bun
+lockfile tarball paths, authenticated Cargo source replacement, credential
+isolation, and absence of unrelated cached versions. Run it after `cargo build`,
+using an existing Python interpreter:
 
 ```text
 uv run --no-project --python 3.12 tests/native_clients.py

@@ -38,7 +38,6 @@ export function Packages() {
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">ON-DEMAND CACHE</div>
           <h1>Packages</h1>
           <p>Inspect your packages, their versions, and their footprint.</p>
         </div>

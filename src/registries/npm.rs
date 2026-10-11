@@ -1,7 +1,8 @@
 use super::{artifact_link, encode, join};
 use crate::{
     App,
-    cache::{self, ArtifactInput},
+    app::Runtime,
+    cache::{self, Artifact, ArtifactInput},
     error::{Error, Result},
 };
 use axum::{
@@ -18,8 +19,8 @@ pub async fn metadata(
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     method: Method,
+    identity: Option<axum::Extension<crate::auth::MirrorIdentity>>,
 ) -> Result<Response> {
-    let _maintenance = app.maintenance.read().await;
     let path = percent_encoding::percent_decode_str(uri.path().strip_prefix("/npm/").unwrap_or(""))
         .decode_utf8()
         .map_err(|_| Error::bad("Invalid package encoding"))?;
@@ -32,19 +33,13 @@ pub async fn metadata(
         ));
     }
     let segments: Vec<&str> = path.split('/').collect();
-    let (name, version) = if path.starts_with('@') {
-        if !(2..=3).contains(&segments.len()) {
+    let (name, tail) = if path.starts_with('@') {
+        if segments.len() < 2 || segments[0].len() < 2 || segments[1].is_empty() {
             return Err(Error::not_found());
         }
-        (
-            format!("{}/{}", segments[0], segments[1]),
-            segments.get(2).copied(),
-        )
+        (format!("{}/{}", segments[0], segments[1]), &segments[2..])
     } else {
-        if !(1..=2).contains(&segments.len()) {
-            return Err(Error::not_found());
-        }
-        (segments[0].to_owned(), segments.get(1).copied())
+        (segments[0].to_owned(), &segments[1..])
     };
     if name.is_empty()
         || name.len() > 214
@@ -54,6 +49,23 @@ pub async fn metadata(
     {
         return Err(Error::bad("Invalid npm package name"));
     }
+    let version = match tail {
+        ["-", filename] => {
+            return download(
+                app,
+                &name,
+                filename,
+                headers,
+                method,
+                identity.map(|identity| identity.0.0),
+            )
+            .await;
+        }
+        [] => None,
+        [version] => Some(*version),
+        _ => return Err(Error::not_found()),
+    };
+    let _maintenance = app.maintenance.read().await;
     let runtime = app.snapshot().await;
     let accept = if headers
         .get("accept")
@@ -80,36 +92,8 @@ pub async fn metadata(
             .get_mut("dist")
             .and_then(Value::as_object_mut)
             .ok_or_else(|| Error::upstream("Missing npm distribution"))?;
-        let tarball = dist
-            .get("tarball")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::upstream("Missing npm tarball"))?
-            .to_owned();
-        let mut hashes = dist
-            .get("integrity")
-            .and_then(Value::as_str)
-            .map(cache::sri_checksums)
-            .unwrap_or_default();
-        if hashes.is_empty()
-            && let Some(hash) = dist.get("shasum").and_then(Value::as_str)
-        {
-            hashes = BTreeMap::from([("sha1".into(), hash.into())]);
-        }
         let filename = format!("{}-{version}.tgz", name.rsplit('/').next().unwrap());
-        let item = cache::register(
-            &app,
-            &runtime,
-            ArtifactInput {
-                registry: "npm",
-                package: &name,
-                version,
-                filename: &filename,
-                url: &tarball,
-                checksums: hashes,
-                sidecar: false,
-            },
-        )
-        .await?;
+        let item = register_dist(&app, &runtime, &name, version, &filename, dist).await?;
         dist.insert("tarball".into(), json!(artifact_link(&runtime, &item)));
     }
     app.package("npm", &name).await?;
@@ -136,6 +120,115 @@ pub async fn metadata(
         &method,
     ))
 }
+
+async fn register_dist(
+    app: &App,
+    runtime: &Runtime,
+    name: &str,
+    version: &str,
+    filename: &str,
+    dist: &serde_json::Map<String, Value>,
+) -> Result<Artifact> {
+    let tarball = dist
+        .get("tarball")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::upstream("Missing npm tarball"))?;
+    let mut hashes = dist
+        .get("integrity")
+        .and_then(Value::as_str)
+        .map(cache::sri_checksums)
+        .unwrap_or_default();
+    if hashes.is_empty()
+        && let Some(hash) = dist.get("shasum").and_then(Value::as_str)
+    {
+        hashes = BTreeMap::from([("sha1".into(), hash.into())]);
+    }
+    cache::register(
+        app,
+        runtime,
+        ArtifactInput {
+            registry: "npm",
+            package: name,
+            version,
+            filename,
+            url: tarball,
+            checksums: hashes,
+            sidecar: false,
+        },
+    )
+    .await
+}
+
+async fn download(
+    app: Arc<App>,
+    name: &str,
+    filename: &str,
+    headers: HeaderMap,
+    method: Method,
+    user_id: Option<String>,
+) -> Result<Response> {
+    let version = filename
+        .strip_prefix(name.rsplit('/').next().unwrap())
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .and_then(|suffix| suffix.strip_suffix(".tgz"))
+        .filter(|version| {
+            !version.is_empty()
+                && version.len() <= 128
+                && version
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
+        })
+        .ok_or_else(Error::not_found)?;
+    let id = {
+        let _maintenance = app.maintenance.read().await;
+        let runtime = app.snapshot().await;
+        // Use the same artifact as rewritten metadata URLs, including for offline installs.
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT a.id FROM artifacts a JOIN packages p ON p.id=a.package_id \
+             WHERE a.registry='npm' AND a.upstream_identity=? AND p.name=? \
+             AND a.version=? AND a.filename=? AND a.is_sidecar=0",
+        )
+        .bind(&runtime.settings.registries["npm"].upstream_url)
+        .bind(name)
+        .bind(version)
+        .bind(filename)
+        .fetch_optional(&app.db)
+        .await?;
+        if let Some(id) = existing {
+            id
+        } else {
+            let url = join(
+                &runtime.settings.registries["npm"].upstream_url,
+                &encode(name),
+            );
+            let (bytes, _) = cache::metadata(
+                &app,
+                &runtime,
+                "npm",
+                &url,
+                "application/vnd.npm.install-v1+json",
+            )
+            .await?;
+            let document: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| Error::upstream("Invalid npm metadata"))?;
+            let data = document
+                .get("versions")
+                .and_then(Value::as_object)
+                .ok_or_else(|| Error::upstream("Missing npm versions"))?
+                .get(version)
+                .ok_or_else(Error::not_found)?;
+            let dist = data
+                .get("dist")
+                .and_then(Value::as_object)
+                .ok_or_else(|| Error::upstream("Missing npm distribution"))?;
+            register_dist(&app, &runtime, name, version, filename, dist)
+                .await?
+                .id
+        }
+    };
+    cache::serve(app, "npm", &id, Some(filename), headers, method, user_id).await
+}
+
 pub async fn audit(
     State(app): State<Arc<App>>,
     OriginalUri(uri): OriginalUri,

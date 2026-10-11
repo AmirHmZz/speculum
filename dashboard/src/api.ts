@@ -69,6 +69,7 @@ export interface Summary {
 }
 export type DashboardRole = 'admin' | 'user'
 export interface DashboardSession {
+  role: DashboardRole
   username: string
   csrf_token: string
   must_change_password: boolean
@@ -78,6 +79,7 @@ export interface UserToken {
   name: string
   prefix: string
   created_at: number
+  last_used_at: number | null
 }
 export interface ClientConfig {
   public_base_url: string
@@ -105,6 +107,15 @@ export async function userApi<T>(path: string, options: RequestInit = {}): Promi
 }
 export function roleApi(role: DashboardRole) {
   return role === 'admin' ? api : userApi
+}
+export async function signIn(username: string, password: string): Promise<DashboardSession> {
+  const response = await fetch('/api/login', {
+    ...post({ username, password }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const body = await response.json()
+  if (!response.ok) throw new Error(body.error || 'Sign in failed')
+  return body
 }
 async function request<T>(role: DashboardRole, path: string, options: RequestInit): Promise<T> {
   const response = await fetch(`/api/${role}${path}`, {

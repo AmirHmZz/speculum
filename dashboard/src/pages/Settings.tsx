@@ -76,7 +76,6 @@ export function SettingsPage({
       <form onSubmit={save}>
         <div className="page-heading">
           <div>
-            <div className="eyebrow">MAKE IT YOURS</div>
             <h1>Settings</h1>
             <p>Changes apply immediately and are preserved across restarts.</p>
           </div>

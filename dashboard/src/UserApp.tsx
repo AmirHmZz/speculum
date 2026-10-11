@@ -85,7 +85,7 @@ export function UserApp() {
     setCsrf('', 'user')
   }
   if (checking) return <Loading />
-  if (!session) return <Login role="user" onLogin={acceptSession} />
+  if (!session) return <Login />
   if (session.must_change_password)
     return <PasswordGate role="user" onChanged={acceptSession} onLogout={logout} />
   return (
@@ -97,7 +97,7 @@ export function UserApp() {
               <BrandIcon size={21} />
             </span>
             <span>
-              speculum<span className="brand-sub">YOUR PACKAGE MIRROR</span>
+              speculum
             </span>
           </a>
           <div className="nav-label">YOUR WORKSPACE</div>
@@ -160,7 +160,6 @@ export function UserApp() {
               <>
                 <div className="page-heading">
                   <div>
-                    <div className="eyebrow">YOUR ACCOUNT</div>
                     <h1>Account</h1>
                     <p>Signed in as {session.username}.</p>
                   </div>
@@ -179,10 +178,6 @@ export function UserApp() {
               </>
             )}
           </div>
-          <footer>
-            <span>Speculum · Personal usage and package access</span>
-            <span>PyPI · npm · Cargo</span>
-          </footer>
         </main>
       </div>
     </ConfirmProvider>
@@ -198,7 +193,6 @@ function UserOverview({ username }: { username: string }) {
     <div className="user-overview">
       <div className="page-heading">
         <div>
-          <div className="eyebrow">YOUR ACTIVITY, AT A GLANCE</div>
           <h1>Overview</h1>
           <p>Your lifetime usage across all your package tokens.</p>
         </div>
@@ -455,7 +449,6 @@ function UserTokens() {
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">YOUR PACKAGE ACCESS</div>
           <h1>Tokens</h1>
           <p>Issue a named token for each client. Tokens work across protected registries.</p>
         </div>
@@ -480,6 +473,7 @@ function UserTokens() {
                 <th>Name</th>
                 <th>Prefix</th>
                 <th>Created</th>
+                <th>Last used</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -494,6 +488,9 @@ function UserTokens() {
                   </td>
                   <td className="font-mono whitespace-nowrap">{token.prefix}…</td>
                   <td className="muted text-xs">{date(token.created_at)}</td>
+                  <td className="muted text-xs whitespace-nowrap">
+                    {token.last_used_at === null ? 'Never' : date(token.last_used_at)}
+                  </td>
                   <td>
                     <Button
                       variant="ghost"

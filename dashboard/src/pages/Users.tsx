@@ -68,7 +68,6 @@ export function UsersPage() {
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">CONTROL ACCESS</div>
           <h1>Mirror users</h1>
           <p>Manage user dashboard accounts and package-manager tokens.</p>
         </div>

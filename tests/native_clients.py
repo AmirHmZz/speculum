@@ -1,11 +1,12 @@
-"""Real uv, npm, and Cargo installs against generated fixture registries.
+"""Real uv, npm, Bun, and Cargo installs against generated fixture registries.
 
-Requires a built Rust binary and uv/npm/Cargo on PATH. No external packages are
+Requires a built Rust binary and uv/npm/Bun/Cargo on PATH. No external packages are
 downloaded. --keep retains the populated demo mirror for dashboard browser QA.
 """
 from __future__ import annotations
 import argparse
 import base64
+from contextlib import closing
 import hashlib
 import http.server
 import io
@@ -158,13 +159,14 @@ def run(command, cwd, env):
     print(f"PASS: {Path(command[0]).name} {' '.join(command[1:3])}", flush=True)
 
 
-def clients(root, base, token, phase):
+def clients(root, base, token, phase, upstream):
     env = {**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost", "UV_NO_PROGRESS": "1"}
     uv = shutil.which("uv")
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    bun = shutil.which("bun")
     cargo = shutil.which("cargo")
-    if not all((uv, npm, cargo)):
-        raise RuntimeError("uv, npm, and Cargo are required for native-client validation")
+    if not all((uv, npm, bun, cargo)):
+        raise RuntimeError("uv, npm, Bun, and Cargo are required for native-client validation")
     folder = root / phase
     folder.mkdir()
     run([uv, "venv", str(folder / "venv"), "--python", sys.executable, "--no-managed-python"], folder, env)
@@ -177,6 +179,22 @@ def clients(root, base, token, phase):
     js.mkdir()
     (js / "package.json").write_text(json.dumps({"name": "fixture-client", "version": "1.0.0", "dependencies": {"mirror-demo": "1.0.0"}}))
     (js / ".npmrc").write_text(f"registry={base}/npm/\n{base.removeprefix('http:')}/npm/:_authToken={token}\n")
+    bunjs = folder / "bun"
+    bunjs.mkdir()
+    (bunjs / "package.json").write_text((js / "package.json").read_text())
+    (bunjs / ".npmrc").write_text((js / ".npmrc").read_text())
+    # Public-registry lockfiles omit custom tarball URLs. Bun reconstructs the
+    # conventional /package/-/package-version.tgz paths at the configured mirror.
+    packages = {}
+    for name, dependency in [("mirror-demo", "@fixture/mirror-dep"), ("@fixture/mirror-dep", None)]:
+        package = {"dependencies": {dependency: "1.0.0"}} if dependency else {}
+        integrity = upstream.documents[f"/npm/{name}"]["versions"]["1.0.0"]["dist"]["integrity"]
+        packages[name] = [f"{name}@1.0.0", "", package, integrity]
+    lockfile = {"lockfileVersion": 2, "configVersion": 1, "workspaces": {"": json.loads((bunjs / "package.json").read_text())}, "packages": packages}
+    (bunjs / "bun.lock").write_text(json.dumps(lockfile))
+    run([bun, "install", "--frozen-lockfile", "--ignore-scripts", "--cache-dir", str(folder / "bun-cache")], bunjs, env)
+    assert (bunjs / "node_modules/@fixture/mirror-dep/package.json").exists()
+    run([bun, "-e", "if (require('mirror-demo') !== 42 || require('@fixture/mirror-dep') !== 42) throw new Error('Invalid fixture packages')"], bunjs, env)
     run([npm, "install", "--ignore-scripts", "--no-fund", "--cache", str(folder / "npm-cache")], js, env)
     assert (js / "node_modules/@fixture/mirror-dep/package.json").exists()
     rust = folder / "rust"
@@ -227,7 +245,8 @@ def main():
         try:
             wait_ready(base, process, root / "server.log")
             password = next(line.partition("=")[2] for line in (root / "server.log").read_text().splitlines() if line.startswith("SPECULUM_INITIAL_ADMIN_PASSWORD="))
-            session, headers = call(base, "/api/admin/login", "POST", {"username": "admin", "password": password})
+            session, headers = call(base, "/api/login", "POST", {"username": "admin", "password": password})
+            assert session["role"] == "admin"
             assert session["must_change_password"] is True
             cookie = headers["Set-Cookie"].split(";")[0]
             session, headers = call(base, "/api/admin/credentials", "PUT", {"current_password": password, "password": "admin-password"}, cookie, session["csrf_token"])
@@ -244,7 +263,7 @@ def main():
             process = subprocess.Popen([str(runtime_binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             wait_ready(base, process, root / "server.log")
             assert (root / "server.log").read_text().count("SPECULUM_INITIAL_ADMIN_PASSWORD=") == 1
-            session, headers = call(base, "/api/admin/login", "POST", {"username": "admin", "password": "recovery-fixture-password"})
+            session, headers = call(base, "/api/login", "POST", {"username": "admin", "password": "recovery-fixture-password"})
             assert session["must_change_password"] is True
             cookie = headers["Set-Cookie"].split(";")[0]
             session, headers = call(base, "/api/admin/credentials", "PUT", {"current_password": "recovery-fixture-password", "password": "admin-password"}, cookie, session["csrf_token"])
@@ -258,21 +277,24 @@ def main():
                 settings["registries"][kind]["metadata_freshness_seconds"] = 0
             call(base, "/api/admin/settings", "PUT", settings, cookie, csrf)
             user, _ = call(base, "/api/admin/users", "POST", {"username": "developer", "enabled": True}, cookie, csrf)
-            user_session, headers = call(base, "/api/user/login", "POST", {"username": "developer", "password": user["temporary_password"]})
+            user_session, headers = call(base, "/api/login", "POST", {"username": "developer", "password": user["temporary_password"]})
+            assert user_session["role"] == "user"
             assert user_session["must_change_password"] is True
             user_cookie = headers["Set-Cookie"].split(";")[0]
             user_session, headers = call(base, "/api/user/password", "PUT", {"current_password": user["temporary_password"], "password": "developer-password"}, user_cookie, user_session["csrf_token"])
             assert user_session["must_change_password"] is False
             user_cookie = headers["Set-Cookie"].split(";")[0]
             issued, _ = call(base, "/api/user/tokens", "POST", {"name": "fixture-clients"}, user_cookie, user_session["csrf_token"])
-            clients(root, base, issued["token"], "online")
+            token_list, _ = call(base, "/api/user/tokens", cookie=user_cookie)
+            assert token_list[0]["last_used_at"] is None
+            clients(root, base, issued["token"], "online", upstream)
             assert all("2.0.0" not in path for path in upstream.downloads), upstream.downloads
             assert not upstream.auth_leaked, "Mirror credentials leaked upstream"
             initial = len(upstream.downloads)
             upstream.offline = True
-            clients(root, base, issued["token"], "offline")
+            clients(root, base, issued["token"], "offline", upstream)
             assert len(upstream.downloads) == initial
-            with sqlite3.connect(root / "data/speculum.sqlite") as database:
+            with closing(sqlite3.connect(root / "data/speculum.sqlite")) as database:
                 assert database.execute("SELECT COUNT(*) FROM artifacts WHERE downloaded_at IS NOT NULL AND version='2.0.0'").fetchone()[0] == 0
             summary, _ = call(base, "/api/admin/summary", cookie=cookie)
             assert summary["total"]["packages"] == 6, summary
@@ -280,6 +302,8 @@ def main():
             personal, _ = call(base, "/api/user/summary", cookie=user_cookie)
             assert personal["total"]["requests"] == summary["total"]["requests"], personal
             assert personal["total"]["packages"] == 6, personal
+            token_list, _ = call(base, "/api/user/tokens", cookie=user_cookie)
+            assert isinstance(token_list[0]["last_used_at"], int)
             print(f"PASS: on-demand caching, dependencies, scopes, authenticated Cargo, offline installs; {initial} upstream files", flush=True)
             if args.keep:
                 upstream.offline = False
@@ -294,6 +318,7 @@ def main():
                 process.kill()
                 process.wait()
             upstream.shutdown()
+            log.close()
             temp.cleanup()
 
 
