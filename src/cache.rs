@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use sqlx::Row;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::OwnedRwLockReadGuard,
@@ -178,6 +178,48 @@ pub async fn upstream(
     }
     Err(Error::upstream("Too many upstream redirects"))
 }
+struct FetchLog<'a> {
+    registry: &'a str,
+    resource_kind: &'static str,
+    method: Method,
+    host: String,
+    path: String,
+    started: Instant,
+}
+impl<'a> FetchLog<'a> {
+    fn new(registry: &'a str, resource_kind: &'static str, method: Method, url: &str) -> Self {
+        // Only retain safe URL components: queries can contain signed download credentials.
+        let parsed = Url::parse(url).ok();
+        let fetch = Self {
+            registry,
+            resource_kind,
+            method,
+            host: parsed
+                .as_ref()
+                .and_then(Url::host_str)
+                .unwrap_or("")
+                .to_owned(),
+            path: parsed.as_ref().map(Url::path).unwrap_or("").to_owned(),
+            started: Instant::now(),
+        };
+        tracing::info!(registry, resource_kind, method=%fetch.method, host=%fetch.host, path=%fetch.path, "Upstream fetch started");
+        fetch
+    }
+    fn finish<T>(&self, result: &Result<T>, status: Option<u16>, bytes: u64) {
+        let elapsed_ms = self.started.elapsed().as_millis() as u64;
+        match result {
+            Ok(_) => {
+                tracing::info!(registry=self.registry, resource_kind=self.resource_kind, method=%self.method, host=%self.host, path=%self.path, status=?status, bytes, elapsed_ms, "Upstream fetch completed");
+            }
+            Err(error) if error.0 == StatusCode::INTERNAL_SERVER_ERROR => {
+                tracing::error!(registry=self.registry, resource_kind=self.resource_kind, method=%self.method, host=%self.host, path=%self.path, status=?status, bytes, elapsed_ms, error=%error.1, "Upstream fetch failed");
+            }
+            Err(error) => {
+                tracing::warn!(registry=self.registry, resource_kind=self.resource_kind, method=%self.method, host=%self.host, path=%self.path, status=?status, bytes, elapsed_ms, error=%error.1, "Upstream fetch failed");
+            }
+        }
+    }
+}
 pub async fn metadata(
     app: &App,
     runtime: &Runtime,
@@ -198,8 +240,20 @@ pub async fn metadata(
         && app.now().saturating_sub(row.get::<i64, _>("fetched_at"))
             < runtime.settings.registries[kind].metadata_freshness_seconds as i64
     {
+        tracing::debug!(
+            registry = kind,
+            resource_kind = "metadata",
+            cache = "hit",
+            "Cache outcome"
+        );
         return Ok((row.get("body"), row.get("content_type")));
     }
+    tracing::debug!(
+        registry = kind,
+        resource_kind = "metadata",
+        cache = if cached.is_some() { "expired" } else { "miss" },
+        "Cache outcome"
+    );
     let mut headers = HeaderMap::new();
     headers.insert(
         "accept",
@@ -219,11 +273,16 @@ pub async fn metadata(
             headers.insert("if-modified-since", value);
         }
     }
+    let fetch = FetchLog::new(kind, "metadata", Method::GET, url);
+    let mut status = None;
+    let mut transferred = 0;
     let fetched = async {
         let response = upstream(runtime, kind, Method::GET, url, headers, None).await?;
+        status = Some(response.status().as_u16());
         if response.status() == StatusCode::NOT_MODIFIED {
             let row = cached.as_ref().ok_or_else(|| Error::upstream("Unexpected upstream 304"))?;
             sqlx::query("UPDATE metadata SET fetched_at=? WHERE key=?").bind(app.now()).bind(&key).execute(&app.db).await?;
+            tracing::debug!(registry=kind, resource_kind="metadata", cache="revalidated", "Cache outcome");
             return Ok((row.get("body"), row.get("content_type")));
         }
         if !response.status().is_success() {
@@ -233,15 +292,17 @@ pub async fn metadata(
         let etag = response.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let modified = response.headers().get("last-modified").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let mut bytes = Vec::new(); let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await { let chunk = chunk.map_err(|_| Error::upstream("Interrupted metadata response"))?; if bytes.len() + chunk.len() > 64 * 1024 * 1024 { return Err(Error::upstream("Metadata exceeds 64 MiB limit")); } bytes.extend_from_slice(&chunk); }
+        while let Some(chunk) = stream.next().await { let chunk = chunk.map_err(|_| Error::upstream("Interrupted metadata response"))?; transferred += chunk.len() as u64; if bytes.len() + chunk.len() > 64 * 1024 * 1024 { return Err(Error::upstream("Metadata exceeds 64 MiB limit")); } bytes.extend_from_slice(&chunk); }
         validate_metadata(kind, &content_type, &bytes)?;
         sqlx::query("INSERT INTO metadata(key,registry,body,content_type,etag,last_modified,fetched_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET body=excluded.body,content_type=excluded.content_type,etag=excluded.etag,last_modified=excluded.last_modified,fetched_at=excluded.fetched_at")
             .bind(&key).bind(kind).bind(&bytes).bind(&content_type).bind(etag).bind(modified).bind(app.now()).execute(&app.db).await?;
         Ok((bytes,content_type))
     }.await;
+    fetch.finish(&fetched, status, transferred);
     match fetched {
         Ok(value) => Ok(value),
         Err(error) if error.0 != StatusCode::NOT_FOUND && cached.is_some() => {
+            tracing::warn!(registry=kind, resource_kind="metadata", host=%fetch.host, path=%fetch.path, cache="stale", error=%error.1, "Serving stale metadata after upstream failure");
             let row = cached.unwrap();
             Ok((row.get("body"), row.get("content_type")))
         }
@@ -279,6 +340,29 @@ async fn download(
     user_id: Option<&str>,
 ) -> Result<()> {
     let _permit = runtime.downloads.acquire().await;
+    let fetch = FetchLog::new(&artifact.registry, "artifact", Method::GET, &artifact.url);
+    let mut status = None;
+    let mut transferred = 0;
+    let result = download_inner(
+        app,
+        runtime,
+        artifact,
+        user_id,
+        &mut status,
+        &mut transferred,
+    )
+    .await;
+    fetch.finish(&result, status, transferred);
+    result
+}
+async fn download_inner(
+    app: &App,
+    runtime: &Runtime,
+    artifact: &Artifact,
+    user_id: Option<&str>,
+    status: &mut Option<u16>,
+    transferred: &mut u64,
+) -> Result<()> {
     let path = app.dir.join("tmp").join(uuid::Uuid::new_v4().to_string());
     let temporary = Temporary(path.clone());
     let mut headers = HeaderMap::new();
@@ -292,6 +376,7 @@ async fn download(
         None,
     )
     .await?;
+    *status = Some(response.status().as_u16());
     if !response.status().is_success() {
         return Err(if response.status() == StatusCode::NOT_FOUND {
             Error::not_found()
@@ -324,6 +409,7 @@ async fn download(
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| Error::upstream("Interrupted artifact download"))?;
             size += chunk.len() as i64;
+            *transferred += chunk.len() as u64;
             sha256.update(&chunk);
             sha512.update(&chunk);
             sha1.update(&chunk);
@@ -533,8 +619,10 @@ pub async fn serve(
     let mut lease = lock.clone().read_owned().await;
     let mut valid =
         item.valid(&runtime, app.now()) && tokio::fs::try_exists(item.path(&app)).await?;
+    tracing::debug!(registry=kind, resource_kind="artifact", artifact_id=id, filename=%item.filename, version=%item.version, cache=if valid { "hit" } else { "miss" }, "Cache outcome");
     if method == Method::HEAD && !valid {
         drop(lease);
+        let fetch = FetchLog::new(kind, "artifact", Method::HEAD, &item.url);
         let response = upstream(
             &runtime,
             kind,
@@ -543,7 +631,24 @@ pub async fn serve(
             HeaderMap::new(),
             None,
         )
-        .await?;
+        .await;
+        let status = response
+            .as_ref()
+            .ok()
+            .map(|response| response.status().as_u16());
+        let outcome = response
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| Error(error.0, error.1.clone()));
+        let outcome = outcome.and_then(|()| {
+            if status.is_some_and(|status| (200..300).contains(&status) || status == 304) {
+                Ok(())
+            } else {
+                Err(Error::upstream("Upstream HEAD request failed"))
+            }
+        });
+        fetch.finish(&outcome, status, 0);
+        let response = response?;
         let mut result = Response::new(Body::empty());
         *result.status_mut() = response.status();
         for name in [
@@ -589,6 +694,15 @@ pub async fn serve(
             ));
         }
         valid = item.valid(&latest, app.now()) && tokio::fs::try_exists(item.path(&app)).await?;
+        if valid {
+            tracing::debug!(
+                registry = kind,
+                resource_kind = "artifact",
+                artifact_id = id,
+                cache = "hit_after_wait",
+                "Cache outcome"
+            );
+        }
         if !valid {
             if tokio::fs::try_exists(item.path(&app)).await? {
                 tokio::fs::remove_file(item.path(&app)).await?;

@@ -169,10 +169,11 @@ pub async fn create_token(
     }
     let token = format!("spm_{}", auth::random_secret()?);
     let token_id = uuid::Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO tokens(id,user_id,name,hash,created_at) VALUES(?,?,?,?,?)")
+    sqlx::query("INSERT INTO tokens(id,user_id,name,prefix,hash,created_at) VALUES(?,?,?,?,?,?)")
         .bind(&token_id)
         .bind(id)
         .bind(input.name)
+        .bind(&token[..12])
         .bind(auth::digest(&token))
         .bind(app.now())
         .execute(&app.db)

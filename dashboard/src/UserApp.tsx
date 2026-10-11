@@ -26,6 +26,7 @@ import {
   type PersonalSummary,
   type PersonalPackage,
   type ClientConfig,
+  type UserToken,
 } from './api'
 import { Login, PasswordForm, PasswordGate } from './auth-ui'
 import { BrandIcon } from './components/brand-icon'
@@ -194,7 +195,7 @@ function UserOverview({ username }: { username: string }) {
   if (!summary.data) return summary.loading ? <Loading /> : <ErrorMessage message={summary.error} />
   const total = summary.data.total
   return (
-    <>
+    <div className="user-overview">
       <div className="page-heading">
         <div>
           <div className="eyebrow">YOUR ACTIVITY, AT A GLANCE</div>
@@ -239,8 +240,8 @@ function UserOverview({ username }: { username: string }) {
         {registries.map((kind) => {
           const stats = summary.data!.registries[kind]
           return (
-            <Card key={kind}>
-              <CardHeader>
+            <Card key={kind} className="user-registry-card">
+              <CardHeader className="user-registry-header">
                 <div className="registry-heading">
                   <span className={`registry-logo ${kind}`}>
                     {kind === 'pypi' ? 'Py' : kind === 'npm' ? 'JS' : 'Rs'}
@@ -258,7 +259,7 @@ function UserOverview({ username }: { username: string }) {
                   </span>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="user-registry-content">
                 <div className="registry-metrics">
                   <div>
                     <strong>{number(stats.requests)}</strong>
@@ -304,11 +305,11 @@ function UserOverview({ username }: { username: string }) {
         <h2>Package activity</h2>
       </div>
       <UserPackages revision={revision} />
-      <div className="section-heading">
+      <div className="section-heading connect-heading">
         <h2>Connect your projects</h2>
       </div>
       <ClientConfiguration config={config.data} username={username} />
-    </>
+    </div>
   )
 }
 function UserPackages({ revision }: { revision: number }) {
@@ -425,7 +426,7 @@ function UserPackages({ revision }: { revision: number }) {
 }
 function UserTokens() {
   const [revision, setRevision] = useState(0)
-  const data = useData<{ id: string; name: string; created_at: number }[]>(
+  const data = useData<UserToken[]>(
     '/tokens',
     revision,
     'user',
@@ -477,6 +478,7 @@ function UserTokens() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Prefix</th>
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
@@ -490,6 +492,7 @@ function UserTokens() {
                       {token.name}
                     </span>
                   </td>
+                  <td className="font-mono whitespace-nowrap">{token.prefix}…</td>
                   <td className="muted text-xs">{date(token.created_at)}</td>
                   <td>
                     <Button

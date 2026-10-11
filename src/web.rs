@@ -82,7 +82,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::mirror_guard,
-        ));
+        ))
+        .route_layer(middleware::from_fn(registry_request_log));
     Router::new()
         .nest("/api/admin", admin_routes)
         .nest("/api/user", user_routes)
@@ -93,8 +94,19 @@ pub fn router(app: Arc<App>) -> Router {
         .fallback(static_assets)
         .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024))
         .layer(middleware::from_fn(security_headers))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &Request| {
+            tracing::debug_span!("http_request", method=%request.method(), path=request.uri().path())
+        }))
         .with_state(app)
+}
+async fn registry_request_log(request: Request, next: middleware::Next) -> Response {
+    let started = std::time::Instant::now();
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let registry = path.split('/').nth(1).unwrap_or("");
+    let response = next.run(request).await;
+    tracing::debug!(%method, registry, path, status=response.status().as_u16(), elapsed_ms=started.elapsed().as_millis() as u64, "Registry request completed");
+    response
 }
 async fn npm_file(
     State(app): State<Arc<App>>,

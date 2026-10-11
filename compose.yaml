@@ -7,7 +7,7 @@ services:
     environment:
       SPECULUM_LISTEN_IP: 0.0.0.0
       SPECULUM_LISTEN_PORT: "8080"
-      RUST_LOG: speculum=info,tower_http=info
+      RUST_LOG: "${RUST_LOG:-speculum=info,tower_http=info}"
     volumes:
       - speculum-data:/app/data
     extra_hosts:

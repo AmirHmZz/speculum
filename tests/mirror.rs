@@ -23,6 +23,8 @@ use std::{
 };
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
+use tracing::instrument::WithSubscriber;
+use tracing_subscriber::{Layer, layer::SubscriberExt};
 
 struct TestClock(AtomicI64);
 impl Clock for TestClock {
@@ -152,11 +154,14 @@ impl Harness {
             download_gate: std::sync::Mutex::new(None),
         });
         let upstream_router = Router::new().fallback(fixture).with_state(upstream.clone());
-        let upstream_task = tokio::spawn(async move {
-            axum::serve(upstream_listener, upstream_router)
-                .await
-                .unwrap();
-        });
+        let upstream_task = tokio::spawn(
+            async move {
+                axum::serve(upstream_listener, upstream_router)
+                    .await
+                    .unwrap();
+            }
+            .with_current_subscriber(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(TestClock(AtomicI64::new(1700000000)));
         let app = App::open_with_clock(dir.path(), clock.clone())
@@ -180,15 +185,23 @@ impl Harness {
             config.auth_required = auth_required;
         }
         app.save_settings(settings).await.unwrap();
-        let router = speculum::router(app.clone());
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        let router = speculum::router(app.clone()).layer(axum::middleware::from_fn(
+            move |request: Request, next: axum::middleware::Next| {
+                next.run(request).with_subscriber(dispatch.clone())
+            },
+        ));
+        let task = tokio::spawn(
+            async move {
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            }
+            .with_current_subscriber(),
+        );
         Self {
             app,
             clock,
@@ -1659,6 +1672,7 @@ async fn user_tokens_sessions_resets_disabling_and_expiry_are_isolated() {
     .await
     .unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["prefix"], &token[..12]);
     assert!(list[0].get("token").is_none() && list[0].get("hash").is_none());
     let second = portal_login(&h, "user", "alice", "alice-permanent-password").await;
     let fresh=portal_session(portal_request(&h,"user","/password",reqwest::Method::PUT,Some(json!({"current_password":"alice-permanent-password","password":"alice-updated-password"})),Some(&alice)).await).await;
@@ -2158,4 +2172,474 @@ async fn personal_history_and_password_flags_survive_restart() {
         speculum::stats::summary(&app, "user").await.unwrap()["total"]["requests"],
         0
     );
+}
+
+#[tokio::test]
+async fn token_prefixes_from_both_creation_paths_survive_restart_and_remain_private() {
+    use axum::{
+        Extension, Json,
+        extract::{Path, State},
+    };
+    use speculum::{admin::TokenInput, auth::DashboardSession};
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open(dir.path()).await.unwrap();
+    for name in ["alice", "bob"] {
+        sqlx::query("INSERT INTO users(id,username,password_hash,must_change_password,created_at) VALUES(?,?, 'fixture',0,?)")
+            .bind(name).bind(name).bind(app.now()).execute(&app.db).await.unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO user_sessions(id,user_id,csrf,created_at) VALUES('session','alice','csrf',?)",
+    )
+    .bind(app.now())
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let alice = DashboardSession {
+        id: "session".into(),
+        user_id: Some("alice".into()),
+        username: "alice".into(),
+        csrf: "csrf".into(),
+        must_change_password: false,
+    };
+    let bob = DashboardSession {
+        user_id: Some("bob".into()),
+        username: "bob".into(),
+        ..alice.clone()
+    };
+    let user_token = speculum::user::create_token(
+        State(app.clone()),
+        Extension(alice.clone()),
+        Json(TokenInput {
+            name: "user-issued".into(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    let admin_token = speculum::admin::create_token(
+        State(app.clone()),
+        Path("alice".into()),
+        Json(TokenInput {
+            name: "admin-issued".into(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    for issued in [&user_token, &admin_token] {
+        let value = issued["token"].as_str().unwrap();
+        let (prefix, hash): (String, String) =
+            sqlx::query_as("SELECT prefix,hash FROM tokens WHERE id=?")
+                .bind(issued["id"].as_str().unwrap())
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(prefix, &value[..12]);
+        assert_eq!(prefix.len(), 12);
+        assert!(prefix.starts_with("spm_"));
+        assert_eq!(hash, speculum::auth::digest(value));
+        assert_ne!(hash, value);
+    }
+    assert_eq!(
+        speculum::user::tokens(State(app.clone()), Extension(bob.clone()))
+            .await
+            .unwrap()
+            .0,
+        json!([])
+    );
+    let error = speculum::user::delete_token(
+        State(app.clone()),
+        Extension(bob),
+        Path(user_token["id"].as_str().unwrap().into()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.0, StatusCode::NOT_FOUND);
+    app.db.close().await;
+    drop(app);
+    let app = App::open(dir.path()).await.unwrap();
+    let listed = speculum::user::tokens(State(app.clone()), Extension(alice))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    for issued in [&user_token, &admin_token] {
+        let row = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == issued["id"])
+            .unwrap();
+        assert_eq!(row["prefix"], &issued["token"].as_str().unwrap()[..12]);
+        assert!(row.get("token").is_none() && row.get("hash").is_none());
+    }
+}
+
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<CapturedLog>>>);
+fn log_subscriber(capture: LogCapture, filter: &str) -> impl tracing::Subscriber + Send + Sync {
+    // Keep a second dispatcher alive: tracing's single-dispatcher optimization otherwise
+    // caches a callsite's interest from unrelated test threads with no subscriber.
+    static SENTINEL: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+    SENTINEL.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+    tracing_subscriber::registry()
+        .with(capture)
+        .with(tracing_subscriber::EnvFilter::new(filter))
+}
+#[derive(Debug)]
+struct CapturedLog {
+    level: tracing::Level,
+    fields: BTreeMap<String, String>,
+}
+#[derive(Default)]
+struct LogFields(BTreeMap<String, String>);
+impl tracing::field::Visit for LogFields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.insert(field.name().into(), format!("{value:?}"));
+    }
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.insert(field.name().into(), value.into());
+    }
+}
+impl<S: tracing::Subscriber> Layer<S> for LogCapture {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut fields = LogFields::default();
+        event.record(&mut fields);
+        self.0.lock().unwrap().push(CapturedLog {
+            level: *event.metadata().level(),
+            fields: fields.0,
+        });
+    }
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut fields = LogFields::default();
+        attrs.record(&mut fields);
+        self.0.lock().unwrap().push(CapturedLog {
+            level: *attrs.metadata().level(),
+            fields: fields.0,
+        });
+    }
+}
+impl LogCapture {
+    fn take(&self) -> Vec<CapturedLog> {
+        let logs = std::mem::take(&mut *self.0.lock().unwrap());
+        let rendered = format!("{logs:?}");
+        for secret in [
+            "client-query-secret",
+            "upstream-query-secret",
+            "header-secret",
+            "body-secret",
+            "proxy-secret",
+        ] {
+            assert!(!rendered.contains(secret), "Credential leaked: {secret}");
+        }
+        logs
+    }
+}
+fn logged(
+    logs: &[CapturedLog],
+    level: tracing::Level,
+    message: &str,
+    fields: &[(&str, &str)],
+) -> bool {
+    logs.iter().any(|log| {
+        log.level == level
+            && log
+                .fields
+                .get("message")
+                .is_some_and(|value| value == message)
+            && fields
+                .iter()
+                .all(|(key, value)| log.fields.get(*key).is_some_and(|field| field == value))
+    })
+}
+
+#[tokio::test]
+async fn registry_logging_covers_cache_refresh_failures_and_credentials() {
+    let capture = LogCapture::default();
+    let subscriber = log_subscriber(capture.clone(), "speculum=debug,tower_http=debug");
+    async {
+        let h = Harness::new(false).await;
+        let (_, _, token, _) = onboard_portal_user(&h, "log-user").await;
+        capture.take();
+        let response = h
+            .client
+            .get(format!(
+                "{}/pypi/simple/demo/?signature=client-query-secret",
+                h.base
+            ))
+            .header("accept", "application/vnd.pypi.simple.v1+json")
+            .header("x-client-secret", "header-secret")
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        let metadata: Value = response.json().await.unwrap();
+        let logs = capture.take();
+        assert!(!format!("{logs:?}").contains(&token));
+        assert!(logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch started",
+            &[("registry", "pypi"), ("resource_kind", "metadata")]
+        ));
+        assert!(logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch completed",
+            &[("status", "Some(200)")]
+        ));
+        assert!(
+            logged(
+                &logs,
+                tracing::Level::DEBUG,
+                "Registry request completed",
+                &[
+                    ("method", "GET"),
+                    ("path", "/pypi/simple/demo/"),
+                    ("status", "200")
+                ]
+            ),
+            "Captured events: {logs:#?}"
+        );
+        h.pypi().await;
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::DEBUG,
+            "Cache outcome",
+            &[("cache", "hit"), ("resource_kind", "metadata")]
+        ));
+        assert!(!logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch started",
+            &[]
+        ));
+        let artifact = metadata["files"][0]["url"].as_str().unwrap();
+        assert_eq!(h.client.head(artifact).send().await.unwrap().status(), 200);
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch completed",
+            &[("method", "HEAD"), ("bytes", "0")]
+        ));
+        assert!(logged(
+            &logs,
+            tracing::Level::DEBUG,
+            "Registry request completed",
+            &[("method", "HEAD")]
+        ));
+        assert_eq!(
+            h.client
+                .get(artifact)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            "fixture archive"
+        );
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch completed",
+            &[("resource_kind", "artifact"), ("bytes", "15")]
+        ));
+        assert_eq!(h.client.get(artifact).send().await.unwrap().status(), 200);
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::DEBUG,
+            "Cache outcome",
+            &[("resource_kind", "artifact"), ("cache", "hit")]
+        ));
+        assert!(!logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch started",
+            &[]
+        ));
+        h.clock.0.fetch_add(301, Ordering::SeqCst);
+        h.pypi().await;
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch completed",
+            &[("status", "Some(304)"), ("bytes", "0")]
+        ));
+        assert!(logged(
+            &logs,
+            tracing::Level::DEBUG,
+            "Cache outcome",
+            &[("cache", "revalidated")]
+        ));
+        h.clock.0.fetch_add(301, Ordering::SeqCst);
+        h.upstream.malformed.store(true, Ordering::SeqCst);
+        h.pypi().await;
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::WARN,
+            "Upstream fetch failed",
+            &[("error", "Invalid upstream JSON metadata")]
+        ));
+        assert!(logs.iter().any(|log| {
+            log.level == tracing::Level::WARN
+                && log.fields.get("message").is_some_and(|message| {
+                    message == "Serving stale metadata after upstream failure"
+                })
+        }));
+        h.upstream.malformed.store(false, Ordering::SeqCst);
+        h.upstream.offline.store(true, Ordering::SeqCst);
+        h.pypi().await;
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::WARN,
+            "Upstream fetch failed",
+            &[("status", "Some(503)")]
+        ));
+        assert!(logged(
+            &logs,
+            tracing::Level::WARN,
+            "Serving stale metadata after upstream failure",
+            &[("cache", "stale")]
+        ));
+        h.upstream.offline.store(false, Ordering::SeqCst);
+        h.upstream.bad_hash.store(true, Ordering::SeqCst);
+        assert_eq!(
+            h.client
+                .get(metadata["files"][1]["url"].as_str().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            502
+        );
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::WARN,
+            "Upstream fetch failed",
+            &[
+                ("resource_kind", "artifact"),
+                ("bytes", "15"),
+                ("error", "Artifact checksum mismatch")
+            ]
+        ));
+        assert!(!logged(
+            &logs,
+            tracing::Level::INFO,
+            "Upstream fetch completed",
+            &[("resource_kind", "artifact")]
+        ));
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let broken_url = format!(
+            "http://{}/truncated.whl?signature=upstream-query-secret",
+            listener.local_addr().unwrap()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\nshort",
+                )
+                .await
+                .unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let item = cache::register(
+            &h.app,
+            &h.app.snapshot().await,
+            ArtifactInput {
+                registry: "pypi",
+                package: "truncated",
+                version: "1",
+                filename: "truncated.whl",
+                url: &broken_url,
+                checksums: BTreeMap::new(),
+                sidecar: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.client
+                .get(format!("{}/pypi/files/{}/truncated.whl", h.base, item.id))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            502
+        );
+        server.await.unwrap();
+        let logs = capture.take();
+        assert!(logged(
+            &logs,
+            tracing::Level::WARN,
+            "Upstream fetch failed",
+            &[
+                ("status", "Some(200)"),
+                ("path", "/truncated.whl"),
+                ("error", "Interrupted artifact download")
+            ]
+        ));
+        assert!(!tokio::fs::try_exists(item.path(&h.app)).await.unwrap());
+        let runtime = h.app.snapshot().await;
+        for kind in ["npm", "cargo"] {
+            let path = if kind == "npm" { "demo" } else { "de/mo/demo" };
+            cache::metadata(
+                &h.app,
+                &runtime,
+                kind,
+                &format!("{}{path}", runtime.settings.registries[kind].upstream_url),
+                "application/json",
+            )
+            .await
+            .unwrap();
+            assert!(logged(
+                &capture.take(),
+                tracing::Level::INFO,
+                "Upstream fetch completed",
+                &[("registry", kind)]
+            ));
+        }
+    }
+    .with_subscriber(subscriber)
+    .await;
+}
+
+#[tokio::test]
+async fn info_logging_keeps_upstream_events_and_filters_request_and_cache_details() {
+    let capture = LogCapture::default();
+    let subscriber = log_subscriber(capture.clone(), "speculum=info,tower_http=info");
+    async {
+        let h = Harness::new(false).await;
+        capture.take();
+        h.pypi().await;
+        let logs = capture.take();
+        assert!(
+            logged(&logs, tracing::Level::INFO, "Upstream fetch completed", &[]),
+            "Captured events: {logs:#?}"
+        );
+        assert!(logs.iter().all(|log| log.level != tracing::Level::DEBUG));
+        h.pypi().await;
+        assert!(capture.take().is_empty());
+    }
+    .with_subscriber(subscriber)
+    .await;
 }

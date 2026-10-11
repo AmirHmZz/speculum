@@ -176,9 +176,11 @@ the response stream; it is not an acknowledgement of client receipt. Storage
 totals reflect files currently on disk, including sidecars, and can briefly
 include expired files while cleanup is running. There are no daily history charts.
 
-Dashboard passwords use Argon2id. Tokens and session IDs are stored hashed, and
-dashboard mutations require CSRF tokens. Temporary passwords must be changed
-before accessing dashboard features. Both session lifetimes are configurable,
+Dashboard passwords use Argon2id. Tokens and session IDs are stored hashed. Only
+the first 12 characters of a token (including `spm_`) are also stored in plaintext
+for identification in the user's Tokens table. The full token is shown only when
+it is created. Dashboard mutations require CSRF tokens. Temporary passwords must
+be changed before accessing dashboard features. Both session lifetimes are configurable,
 defaulting to 12 hours. Proxy secrets are encrypted with the persisted
 data-volume key, masked in settings responses, and never logged. Back up that
 key together with the database. Ten failed login attempts per dashboard role from one direct
@@ -249,7 +251,21 @@ settings encryption, restart persistence, users/CSRF, and SOCKS5 authentication/
 
 `/healthz` checks database availability. The binary's `healthcheck` subcommand
 provides the Docker health check. Structured operational logs go to stdout;
-`RUST_LOG` controls verbosity. A cold download failure is returned clearly and
+`RUST_LOG` controls verbosity, including when running through Compose. Set it in
+your shell or in a `.env` file alongside `compose.yaml` (see `.env.example`):
+
+```dotenv
+RUST_LOG=speculum=debug,tower_http=info
+```
+
+The default is `speculum=info,tower_http=info`. Upstream metadata fetches,
+artifact downloads, and HEAD probes log at `INFO`; registry requests and cache
+outcomes log at `DEBUG`. Upstream failures and stale metadata fallback log at
+`WARN`, while internal database and storage failures log at `ERROR`. Logs omit
+credentials, headers, request bodies, and URL query strings. Recreate the
+container with `docker compose up -d` after changing `RUST_LOG`.
+
+A cold download failure is returned clearly and
 leaves no reusable partial cache file.
 
 For a consistent backup, stop the service, copy **all of `/app/data`** with

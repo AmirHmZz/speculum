@@ -73,6 +73,12 @@ export interface DashboardSession {
   csrf_token: string
   must_change_password: boolean
 }
+export interface UserToken {
+  id: string
+  name: string
+  prefix: string
+  created_at: number
+}
 export interface ClientConfig {
   public_base_url: string
   registries: Record<Registry, { enabled: boolean; auth_required: boolean }>

@@ -413,6 +413,44 @@ h2 {
   display: block;
   margin-top: 6px;
 }
+.user-overview {
+  --registry-gap: 17px;
+  --registry-padding: 24px;
+}
+.user-overview .registry-grid {
+  gap: var(--registry-gap);
+  margin-bottom: var(--registry-gap);
+}
+.user-overview .connect-heading {
+  margin-top: 30px;
+}
+.user-overview .user-registry-header {
+  padding: var(--registry-padding);
+}
+.user-overview .user-registry-content {
+  padding: 0 var(--registry-padding) var(--registry-padding);
+}
+.user-overview .registry-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0;
+}
+.user-overview .registry-metrics > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.user-overview .stat-value,
+.user-overview .stat-detail {
+  overflow-wrap: anywhere;
+}
+.user-overview .registry-metrics > div:nth-child(2) {
+  text-align: center;
+}
+.user-overview .registry-metrics > div:last-child {
+  text-align: right;
+}
 .registry-footer {
   border-top: 1px solid var(--border);
   padding-top: 14px;
@@ -892,6 +930,10 @@ footer > span {
   }
 }
 @media (max-width: 1100px) {
+  .user-overview {
+    --registry-gap: 12px;
+    --registry-padding: 18px;
+  }
   .sidebar {
     width: 200px;
     padding-inline: 12px;
