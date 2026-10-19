@@ -1,0 +1,178 @@
+name: CI and container publishing
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Rust, dashboard, and native clients
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      publish: ${{ steps.meta.outputs.publish }}
+      tags: ${{ steps.meta.outputs.tags }}
+      version: ${{ steps.meta.outputs.version }}
+    env:
+      SPECULUM_REQUIRE_DASHBOARD: '1'
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate image metadata and read Docker toolchains
+        id: meta
+        run: python3 .github/scripts/image_metadata.py
+      - name: Test publishing boundaries
+        run: python3 -m unittest discover -s tests -p 'test_ci_*.py'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.meta.outputs.bun }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          # Fixtures deliberately use isolated, uncached Python installs.
+          enable-cache: false
+      - name: Install matching Rust toolchain
+        env:
+          RUST_VERSION: ${{ steps.meta.outputs.rust }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --component clippy
+          rustup default "$RUST_VERSION"
+      - name: Cache Rust dependencies and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-rust-${{ steps.meta.outputs.rust }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ steps.meta.outputs.rust }}-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-rust-${{ steps.meta.outputs.rust }}-
+      - name: Cache dashboard dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ steps.meta.outputs.bun }}-${{ hashFiles('dashboard/bun.lock') }}
+      - name: Build embedded dashboard
+        working-directory: dashboard
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Check Rust warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --locked
+      - name: Build native-client test binary
+        run: cargo build --locked
+      - name: Test real package managers and offline caching
+        run: python tests/native_clients.py
+
+  container:
+    name: Build and smoke-test container
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      image-id: ${{ steps.tested.outputs.image-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Validate production and local Compose configurations
+        run: |
+          docker compose config --quiet
+          docker compose -f compose.yaml -f compose.build.yaml config --quiet
+      - name: Build image for testing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: speculum:ci
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.checks.outputs.version }}
+          cache-from: type=gha,scope=speculum-amd64
+          cache-to: type=gha,mode=max,scope=speculum-amd64
+      - name: Test bootstrap, dashboards, health, and restart persistence
+        id: tested
+        run: |
+          python3 tests/docker_ci.py --image speculum:ci
+          printf 'image-id=%s\n' "$(docker image inspect speculum:ci --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+      - name: Save tested image for publishing
+        if: github.event_name == 'push' && needs.checks.outputs.publish == 'true'
+        run: docker save --output "$RUNNER_TEMP/speculum-image.tar" speculum:ci
+      - name: Transfer tested image
+        if: github.event_name == 'push' && needs.checks.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tested-image
+          path: ${{ runner.temp }}/speculum-image.tar
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    name: Publish tested image to GHCR
+    needs: [checks, container]
+    if: github.event_name == 'push' && needs.checks.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tested-image
+          path: ${{ runner.temp }}
+      - name: Load and verify tested image
+        env:
+          EXPECTED_IMAGE_ID: ${{ needs.container.outputs.image-id }}
+        run: |
+          docker load --input "$RUNNER_TEMP/speculum-image.tar"
+          test "$(docker image inspect speculum:ci --format '{{.Id}}')" = "$EXPECTED_IMAGE_ID"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tags and record registry digest
+        env:
+          IMAGE_TAGS: ${{ needs.checks.outputs.tags }}
+        run: |
+          echo '### Published container image' >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r tag; do
+            docker tag speculum:ci "$tag"
+            docker push "$tag" | tee "$RUNNER_TEMP/speculum-push.log"
+            digest=$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$RUNNER_TEMP/speculum-push.log" | tail -n 1)
+            test -n "$digest"
+            printf -- '- `%s` — `%s`\n' "$tag" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$IMAGE_TAGS"

@@ -6,3 +6,4 @@
 /.env
 *.log
 /tests/.runtime/
+__pycache__/

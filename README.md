@@ -6,7 +6,9 @@ on HTTP; place your own TLS-terminating reverse proxy in front of it.
 
 ## Start with Docker Compose
 
-1. Run `docker compose up --build -d`; no credential environment variables are needed.
+1. Run `docker compose pull` followed by `docker compose up -d --wait`.
+   Compose uses the prebuilt Linux AMD64 image `ghcr.io/amirhmzz/speculum:latest`;
+   no registry login or credential environment variables are needed once the package is public.
 2. Read the generated initial password with `docker compose logs speculum`.
    Look for `SPECULUM_INITIAL_ADMIN_PASSWORD=...`. It is printed once on a fresh
    database, even when `RUST_LOG` filters other startup messages.
@@ -31,6 +33,110 @@ metadata, artifacts, and `secret.key`. Runtime settings are edited through the
 dashboard and take effect without restarting. The administrator username is always
 `admin`. Restarts preserve the chosen password and never print it. Bootstrap
 passwords are stored only as hashes; use password recovery if the initial log is lost.
+
+### Updates and image selection
+
+From the same directory and Compose project used for installation, update manually:
+
+```sh
+docker compose pull
+docker compose up -d --wait
+```
+
+Updates reuse the existing data volume. Back up the complete volume before an
+upgrade, especially when the release changes the database schema (see Operations
+and recovery). Speculum does not migrate existing schemas automatically.
+
+The `latest` tag follows successful stable release-tag builds. To pin a version or
+digest, set `SPECULUM_IMAGE` in the `.env` file beside `compose.yaml`, then run the
+commands above:
+
+```dotenv
+SPECULUM_IMAGE=ghcr.io/amirhmzz/speculum:0.2.1
+# Or use the digest shown in the publishing workflow summary:
+# SPECULUM_IMAGE=ghcr.io/amirhmzz/speculum@sha256:<published-digest>
+```
+
+Use `ghcr.io/amirhmzz/speculum:main` to follow tested development builds. To build
+your checkout locally instead, explicitly include the development override on
+every Compose command (including logs, restart, and recovery):
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up --build -d --wait
+```
+
+This builds `speculum:local` and preserves the same service settings and data
+volume. The standard Compose file never builds from source.
+
+## GitHub CI and container publishing
+
+GitHub Actions validates pull requests targeting `main`, pushes to `main`, and
+version-tag pushes. It builds the dashboard using its frozen Bun lockfile, runs
+Rust formatting/Clippy/tests, and tests real uv/npm/Bun/Cargo installs against
+fixture registries, including offline cache use. Rust and Bun versions are read
+from the Dockerfile. A separate job builds the Linux AMD64 image and smoke-tests
+its health, embedded dashboards, account setup, and restart persistence using a
+unique temporary Compose project. Test storage is removed afterward.
+
+Run the publishing-boundary and container checks locally with:
+
+```sh
+python -m unittest discover -s tests -p 'test_ci_*.py'
+docker compose -f compose.yaml -f compose.build.yaml build
+python tests/docker_ci.py --image speculum:local
+```
+
+Publishing runs only after every check passes on a main or release-tag push.
+It loads and verifies the tested image from a workflow artifact rather than
+rebuilding it. Pull requests never publish. Published image tags and the registry
+digest appear in the publishing job's summary:
+
+| Trigger | Tags |
+| --- | --- |
+| Push to `main` | `main`, `sha-<full-commit>` |
+| Push `v0.2.1` | `0.2.1`, `0.2`, `latest`, `sha-<full-commit>` |
+
+New release tags must use `vX.Y.Z`, without prerelease suffixes or leading zeros.
+Existing tags are unchanged. After updating package versions/changelog as needed
+and merging the intended release commit to `main`, create a new, unused tag:
+
+```sh
+git tag v0.2.1
+git push origin v0.2.1
+```
+
+Replace the example with your intended version. The workflow does not change
+package versions, create GitHub releases, or update running servers. Each successful
+release-tag push updates its minor alias and `latest`, including a backport; pin
+an exact version or digest when that behavior is undesirable. The SHA tag identifies
+the source commit; main and release builds of that commit may have different
+version labels. Use a digest to identify the exact image.
+
+### First publication and public access
+
+Enable GitHub Actions for the repository and allow the pinned actions used by
+the workflow. The publishing job uses the built-in `GITHUB_TOKEN` with
+`packages: write`; no personal access token or repository secret is required.
+The OCI source label links the image to this repository. If a package with this
+name already exists, ensure this repository has Actions write access to it.
+
+GHCR initially creates packages as **private**, even for public repositories.
+After the first successful publication, open your GitHub profile's **Packages**,
+select **speculum**, open **Package settings**, and change its visibility to
+**Public**. This is a one-time package-owner setting; the workflow does not change
+visibility. See [GitHub's Container registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+Verify an anonymous pull using an empty Docker credential configuration:
+
+```sh
+docker --config /tmp/speculum-ghcr-anonymous pull ghcr.io/amirhmzz/speculum:main
+```
+
+Use a fresh, empty directory for `--config` (on Windows, use a temporary Windows
+path). `latest` becomes available after the first successful `vX.Y.Z` build; a
+main-only first publication provides `main` and SHA tags. Until a stable image is
+published, set `SPECULUM_IMAGE=ghcr.io/amirhmzz/speculum:main` or use the local-build
+override.
 
 ## Package-manager configuration
 

@@ -1,0 +1,6 @@
+# Explicit local development override; the default Compose file uses GHCR.
+services:
+  speculum:
+    image: speculum:local
+    build: .
+    pull_policy: build
