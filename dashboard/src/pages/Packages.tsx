@@ -1,3 +1,4 @@
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import {
   ArrowLeft,
   ChevronLeft,
@@ -11,6 +12,7 @@ import { api, labels, registries, type Artifact, type Package } from '../api'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { RegistrySelect } from '../components/registry-select'
 import { ErrorMessage, Loading, Stat, useConfirm, useData } from '../common'
 import { bytes, date, number } from '../lib/utils'
 export function Packages() {
@@ -60,60 +62,50 @@ export function Packages() {
               }}
             />
           </div>
-          <select
-            aria-label="Filter registry"
+          <RegistrySelect
             value={registry}
-            onChange={(e) => {
-              setRegistry(e.target.value)
+            onValueChange={(value) => {
+              setRegistry(value)
               setPage(1)
             }}
-          >
-            <option value="">All registries</option>
-            {registries.map((kind) => (
-              <option key={kind} value={kind}>
-                {labels[kind]}
-              </option>
+          />
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Package</TableHead>
+              <TableHead>Registry</TableHead>
+              <TableHead>Versions</TableHead>
+              <TableHead>Storage</TableHead>
+              <TableHead>Requests</TableHead>
+              <TableHead>Hit rate</TableHead>
+              <TableHead>Last access</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.data?.items.map((item) => (
+              <TableRow key={item.id}>
+                <TableCell>
+                  <button className="package-link" onClick={() => setSelected(item.id)}>
+                    <PackageIcon size={16} />
+                    {item.name}
+                    <ChevronRight size={13} />
+                  </button>
+                </TableCell>
+                <TableCell>
+                  <span className={`registry-tag ${item.registry}`}>{item.registry}</span>
+                </TableCell>
+                <TableCell>{number(item.versions)}</TableCell>
+                <TableCell>{bytes(item.stored_bytes)}</TableCell>
+                <TableCell>{number(item.requests)}</TableCell>
+                <TableCell>
+                  {item.requests ? `${Math.round((item.hits / item.requests) * 100)}%` : '—'}
+                </TableCell>
+                <TableCell className="muted text-xs">{date(item.last_access)}</TableCell>
+              </TableRow>
             ))}
-          </select>
-        </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Package</th>
-                <th>Registry</th>
-                <th>Versions</th>
-                <th>Storage</th>
-                <th>Requests</th>
-                <th>Hit rate</th>
-                <th>Last access</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.data?.items.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <button className="package-link" onClick={() => setSelected(item.id)}>
-                      <PackageIcon size={16} />
-                      {item.name}
-                      <ChevronRight size={13} />
-                    </button>
-                  </td>
-                  <td>
-                    <span className={`registry-tag ${item.registry}`}>{item.registry}</span>
-                  </td>
-                  <td>{number(item.versions)}</td>
-                  <td>{bytes(item.stored_bytes)}</td>
-                  <td>{number(item.requests)}</td>
-                  <td>
-                    {item.requests ? `${Math.round((item.hits / item.requests) * 100)}%` : '—'}
-                  </td>
-                  <td className="muted text-xs">{date(item.last_access)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+          </TableBody>
+        </Table>
         {data.loading && !data.data && <Loading />}
         {data.data?.items.length === 0 && (
           <div className="empty">
@@ -262,59 +254,57 @@ function PackageDetails({ id, onBack }: { id: string; onBack: () => void }) {
               </Button>
             </div>
           </CardHeader>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Artifact</th>
-                  <th>Size</th>
-                  <th>Downloaded</th>
-                  <th>Expires</th>
-                  <th>
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {result
-                  .data!.artifacts.filter((a) => a.version === version)
-                  .map((artifact) => (
-                    <tr key={artifact.id}>
-                      <td>
-                        <span className="artifact-name" title={`Upstream: ${artifact.upstream}`}>
-                          {artifact.filename}
-                        </span>
-                        {artifact.is_sidecar && <span className="badge ml-2">Metadata</span>}
-                      </td>
-                      <td>{bytes(artifact.size)}</td>
-                      <td className="text-xs">{date(artifact.downloaded_at)}</td>
-                      <td className="text-xs">
-                        {artifact.expires_at === null ? 'Forever' : date(artifact.expires_at)}
-                      </td>
-                      <td>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label={`Delete ${artifact.filename}`}
-                          onClick={() =>
-                            confirm({
-                              title: 'Delete artifact?',
-                              description: artifact.filename,
-                              action: async () => {
-                                await api(`/artifacts/${artifact.id}`, { method: 'DELETE' })
-                                setRevision(revision + 1)
-                              },
-                            })
-                          }
-                        >
-                          <Trash2 />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Artifact</TableHead>
+                <TableHead>Size</TableHead>
+                <TableHead>Downloaded</TableHead>
+                <TableHead>Expires</TableHead>
+                <TableHead>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {result
+                .data!.artifacts.filter((a) => a.version === version)
+                .map((artifact) => (
+                  <TableRow key={artifact.id}>
+                    <TableCell>
+                      <span className="artifact-name" title={`Upstream: ${artifact.upstream}`}>
+                        {artifact.filename}
+                      </span>
+                      {artifact.is_sidecar && <span className="badge ml-2">Metadata</span>}
+                    </TableCell>
+                    <TableCell>{bytes(artifact.size)}</TableCell>
+                    <TableCell className="text-xs">{date(artifact.downloaded_at)}</TableCell>
+                    <TableCell className="text-xs">
+                      {artifact.expires_at === null ? 'Forever' : date(artifact.expires_at)}
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete ${artifact.filename}`}
+                        onClick={() =>
+                          confirm({
+                            title: 'Delete artifact?',
+                            description: artifact.filename,
+                            action: async () => {
+                              await api(`/artifacts/${artifact.id}`, { method: 'DELETE' })
+                              setRevision(revision + 1)
+                            },
+                          })
+                        }
+                      >
+                        <Trash2 />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
         </Card>
       ))}
     </>

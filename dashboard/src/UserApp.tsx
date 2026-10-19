@@ -1,3 +1,4 @@
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table'
 import { useEffect, useState, type FormEvent } from 'react'
 import {
   ChevronLeft,
@@ -31,6 +32,7 @@ import {
 import { Login, PasswordForm, PasswordGate } from './auth-ui'
 import { BrandIcon } from './components/brand-icon'
 import { ClientConfiguration } from './components/client-configuration'
+import { RegistrySelect } from './components/registry-select'
 import { Button } from './components/ui/button'
 import { Input } from './components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './components/ui/card'
@@ -332,56 +334,46 @@ function UserPackages({ revision }: { revision: number }) {
               }}
             />
           </div>
-          <select
-            aria-label="Filter registry"
+          <RegistrySelect
             value={registry}
-            onChange={(e) => {
-              setRegistry(e.target.value)
+            onValueChange={(value) => {
+              setRegistry(value)
               setPage(1)
             }}
-          >
-            <option value="">All registries</option>
-            {registries.map((kind) => (
-              <option key={kind} value={kind}>
-                {labels[kind]}
-              </option>
+          />
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Package</TableHead>
+              <TableHead>Registry</TableHead>
+              <TableHead>Requests</TableHead>
+              <TableHead>Hits / misses</TableHead>
+              <TableHead>Failures</TableHead>
+              <TableHead>Client traffic</TableHead>
+              <TableHead>Upstream traffic</TableHead>
+              <TableHead>Last access</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.data?.items.map((item) => (
+              <TableRow key={item.id}>
+                <TableCell>{item.name}</TableCell>
+                <TableCell>
+                  <span className={`registry-tag ${item.registry}`}>{item.registry}</span>
+                </TableCell>
+                <TableCell>{number(item.requests)}</TableCell>
+                <TableCell>
+                  {number(item.hits)} / {number(item.misses)}
+                </TableCell>
+                <TableCell>{number(item.failures)}</TableCell>
+                <TableCell>{bytes(item.client_bytes)}</TableCell>
+                <TableCell>{bytes(item.upstream_bytes)}</TableCell>
+                <TableCell className="muted text-xs">{date(item.last_access)}</TableCell>
+              </TableRow>
             ))}
-          </select>
-        </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Package</th>
-                <th>Registry</th>
-                <th>Requests</th>
-                <th>Hits / misses</th>
-                <th>Failures</th>
-                <th>Client traffic</th>
-                <th>Upstream traffic</th>
-                <th>Last access</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.data?.items.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.name}</td>
-                  <td>
-                    <span className={`registry-tag ${item.registry}`}>{item.registry}</span>
-                  </td>
-                  <td>{number(item.requests)}</td>
-                  <td>
-                    {number(item.hits)} / {number(item.misses)}
-                  </td>
-                  <td>{number(item.failures)}</td>
-                  <td>{bytes(item.client_bytes)}</td>
-                  <td>{bytes(item.upstream_bytes)}</td>
-                  <td className="muted text-xs">{date(item.last_access)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+          </TableBody>
+        </Table>
         {data.loading && !data.data && <Loading />}
         {data.data?.items.length === 0 && (
           <div className="empty">
@@ -466,55 +458,53 @@ function UserTokens() {
       </div>
       <ErrorMessage message={data.error} />
       <Card>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Prefix</th>
-                <th>Created</th>
-                <th>Last used</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.data?.map((token) => (
-                <tr key={token.id}>
-                  <td>
-                    <span className="flex items-center gap-2">
-                      <KeyRound size={16} />
-                      {token.name}
-                    </span>
-                  </td>
-                  <td className="font-mono whitespace-nowrap">{token.prefix}…</td>
-                  <td className="muted text-xs">{date(token.created_at)}</td>
-                  <td className="muted text-xs whitespace-nowrap">
-                    {token.last_used_at === null ? 'Never' : date(token.last_used_at)}
-                  </td>
-                  <td>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Revoke ${token.name}`}
-                      onClick={() =>
-                        confirm({
-                          title: 'Revoke token?',
-                          description: `${token.name} will immediately stop working.`,
-                          action: async () => {
-                            await userApi(`/tokens/${token.id}`, { method: 'DELETE' })
-                            setRevision(revision + 1)
-                          },
-                        })
-                      }
-                    >
-                      <Trash2 />
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Prefix</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead>Last used</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.data?.map((token) => (
+              <TableRow key={token.id}>
+                <TableCell>
+                  <span className="flex items-center gap-2">
+                    <KeyRound size={16} />
+                    {token.name}
+                  </span>
+                </TableCell>
+                <TableCell className="font-mono whitespace-nowrap">{token.prefix}…</TableCell>
+                <TableCell className="muted text-xs">{date(token.created_at)}</TableCell>
+                <TableCell className="muted text-xs whitespace-nowrap">
+                  {token.last_used_at === null ? 'Never' : date(token.last_used_at)}
+                </TableCell>
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Revoke ${token.name}`}
+                    onClick={() =>
+                      confirm({
+                        title: 'Revoke token?',
+                        description: `${token.name} will immediately stop working.`,
+                        action: async () => {
+                          await userApi(`/tokens/${token.id}`, { method: 'DELETE' })
+                          setRevision(revision + 1)
+                        },
+                      })
+                    }
+                  >
+                    <Trash2 />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
         {data.loading && !data.data && <Loading />}
         {data.data?.length === 0 && (
           <div className="empty">

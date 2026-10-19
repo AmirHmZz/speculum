@@ -11,6 +11,7 @@ import {
   type DashboardSession,
 } from '../api'
 import { Button } from '../components/ui/button'
+import { NumberField } from '../components/number-field'
 import { Input } from '../components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { PasswordForm } from '../auth-ui'
@@ -171,35 +172,22 @@ export function SettingsPage({
               />
             </Field>
             <div className="two-columns">
-              <Field
+              <NumberField
                 label="Artifact cache lifetime (seconds)"
                 hint="Blank means forever. Changes recalculate expiry for files still stored."
-              >
-                <Input
-                  type="number"
-                  min={1}
-                  placeholder="Forever"
-                  value={config.cache_lifetime_seconds ?? ''}
-                  onChange={(e) =>
-                    registry(
-                      'cache_lifetime_seconds',
-                      e.target.value === '' ? null : Number(e.target.value),
-                    )
-                  }
-                />
-              </Field>
-              <Field
+                min={1}
+                placeholder="Forever"
+                value={config.cache_lifetime_seconds}
+                onValueChange={(value) => registry('cache_lifetime_seconds', value)}
+              />
+              <NumberField
                 label="Metadata freshness (seconds)"
                 hint="Retained metadata can be used when upstream is unavailable."
-              >
-                <Input
-                  type="number"
-                  required
-                  min={0}
-                  value={config.metadata_freshness_seconds}
-                  onChange={(e) => registry('metadata_freshness_seconds', Number(e.target.value))}
-                />
-              </Field>
+                required
+                min={0}
+                value={config.metadata_freshness_seconds}
+                onValueChange={(value) => registry('metadata_freshness_seconds', value ?? 0)}
+              />
             </div>
             <div className="form-divider" />
             <Toggle
@@ -272,23 +260,22 @@ export function SettingsPage({
                 ['user_session_lifetime_seconds', 'User session lifetime (seconds)', 60],
               ] as const
             ).map(([key, label, min]) => (
-              <Field key={key} label={label}>
-                <Input
-                  required
-                  type="number"
-                  min={min}
-                  max={
-                    key === 'download_concurrency'
-                      ? 256
-                      : key === 'admin_session_lifetime_seconds' ||
-                          key === 'user_session_lifetime_seconds'
-                        ? 2592000
-                        : undefined
-                  }
-                  value={settings[key]}
-                  onChange={(e) => update(key, Number(e.target.value))}
-                />
-              </Field>
+              <NumberField
+                key={key}
+                label={label}
+                required
+                min={min}
+                max={
+                  key === 'download_concurrency'
+                    ? 256
+                    : key === 'admin_session_lifetime_seconds' ||
+                        key === 'user_session_lifetime_seconds'
+                      ? 2592000
+                      : undefined
+                }
+                value={settings[key]}
+                onValueChange={(value) => update(key, value ?? min)}
+              />
             ))}
           </CardContent>
         </Card>

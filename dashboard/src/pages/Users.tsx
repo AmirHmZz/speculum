@@ -1,3 +1,4 @@
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { useState, type FormEvent } from 'react'
 import { KeyRound, Plus, Shield, Trash2, UserRound } from 'lucide-react'
 import { api, post, put, type User } from '../api'
@@ -86,128 +87,126 @@ export function UsersPage() {
         </span>
       </div>
       <Card>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Status</th>
-                <th>Tokens</th>
-                <th>Created</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.data?.map((user) => (
-                <tr key={user.id}>
-                  <td>
-                    <button className="package-link" onClick={() => open(user)}>
-                      <UserRound size={17} />
-                      {user.username}
-                    </button>
-                  </td>
-                  <td>
-                    <span className={`badge ${user.enabled ? 'green' : 'muted-badge'}`}>
-                      {user.enabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                    {user.must_change_password && (
-                      <div className="muted text-xs mt-1">Password change required</div>
-                    )}
-                  </td>
-                  <td>
-                    <div className="token-list">
-                      {user.tokens.length ? (
-                        user.tokens.map((token) => (
-                          <span key={token.id} className="token-chip">
-                            <KeyRound size={12} />
-                            {token.name}
-                            <button
-                              aria-label={`Revoke ${token.name}`}
-                              onClick={() =>
-                                confirm({
-                                  title: 'Revoke token?',
-                                  description: `${token.name} will immediately stop working.`,
-                                  action: async () => {
-                                    await api(`/tokens/${token.id}`, { method: 'DELETE' })
-                                    setRevision(revision + 1)
-                                  },
-                                })
-                              }
-                            >
-                              ×
-                            </button>
-                          </span>
-                        ))
-                      ) : (
-                        <span className="muted">None</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="text-xs muted">{date(user.created_at)}</td>
-                  <td>
-                    <div className="row-actions">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setTokenUser(user)
-                          setTokenName('')
-                          setIssued('')
-                          setError('')
-                        }}
-                      >
-                        <KeyRound />
-                        New token
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          confirm({
-                            title: `Reset password for ${user.username}?`,
-                            description:
-                              'This signs out their dashboard sessions. Package tokens stay valid.',
-                            action: async () => {
-                              const result = await api<{ temporary_password: string }>(
-                                `/users/${user.id}/reset-password`,
-                                post({}),
-                              )
-                              setTemporary({
-                                username: user.username,
-                                password: result.temporary_password,
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>User</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Tokens</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.data?.map((user) => (
+              <TableRow key={user.id}>
+                <TableCell>
+                  <button className="package-link" onClick={() => open(user)}>
+                    <UserRound size={17} />
+                    {user.username}
+                  </button>
+                </TableCell>
+                <TableCell>
+                  <span className={`badge ${user.enabled ? 'green' : 'muted-badge'}`}>
+                    {user.enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                  {user.must_change_password && (
+                    <div className="muted text-xs mt-1">Password change required</div>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="token-list">
+                    {user.tokens.length ? (
+                      user.tokens.map((token) => (
+                        <span key={token.id} className="token-chip">
+                          <KeyRound size={12} />
+                          {token.name}
+                          <button
+                            aria-label={`Revoke ${token.name}`}
+                            onClick={() =>
+                              confirm({
+                                title: 'Revoke token?',
+                                description: `${token.name} will immediately stop working.`,
+                                action: async () => {
+                                  await api(`/tokens/${token.id}`, { method: 'DELETE' })
+                                  setRevision(revision + 1)
+                                },
                               })
-                              setRevision(revision + 1)
-                            },
-                          })
-                        }
-                      >
-                        Reset password
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Delete ${user.username}`}
-                        onClick={() =>
-                          confirm({
-                            title: `Delete ${user.username}?`,
-                            description:
-                              'The user and all their tokens will be permanently removed.',
-                            action: async () => {
-                              await api(`/users/${user.id}`, { method: 'DELETE' })
-                              setRevision(revision + 1)
-                            },
-                          })
-                        }
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                            }
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    ) : (
+                      <span className="muted">None</span>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="text-xs muted">{date(user.created_at)}</TableCell>
+                <TableCell>
+                  <div className="row-actions">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setTokenUser(user)
+                        setTokenName('')
+                        setIssued('')
+                        setError('')
+                      }}
+                    >
+                      <KeyRound />
+                      New token
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        confirm({
+                          title: `Reset password for ${user.username}?`,
+                          description:
+                            'This signs out their dashboard sessions. Package tokens stay valid.',
+                          action: async () => {
+                            const result = await api<{ temporary_password: string }>(
+                              `/users/${user.id}/reset-password`,
+                              post({}),
+                            )
+                            setTemporary({
+                              username: user.username,
+                              password: result.temporary_password,
+                            })
+                            setRevision(revision + 1)
+                          },
+                        })
+                      }
+                    >
+                      Reset password
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete ${user.username}`}
+                      onClick={() =>
+                        confirm({
+                          title: `Delete ${user.username}?`,
+                          description:
+                            'The user and all their tokens will be permanently removed.',
+                          action: async () => {
+                            await api(`/users/${user.id}`, { method: 'DELETE' })
+                            setRevision(revision + 1)
+                          },
+                        })
+                      }
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
         {data.loading && !data.data && <Loading />}
         {data.data?.length === 0 && (
           <div className="empty">

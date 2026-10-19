@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import {
-  Braces,
   ChevronRight,
   Database,
   LayoutDashboard,
@@ -142,9 +141,6 @@ function AdminApp() {
               Workspace <ChevronRight size={13} /> <strong>{pages[view].label}</strong>
             </span>
             <div className="topbar-actions">
-              <span className="topbar-caption">
-                <Braces size={14} /> PyPI · npm · Cargo
-              </span>
               <Button
                 variant="ghost"
                 size="icon"
