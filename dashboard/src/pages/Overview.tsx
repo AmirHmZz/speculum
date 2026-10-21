@@ -1,5 +1,5 @@
 import { ArrowDownToLine, ArrowRight, HardDrive, Package, ShieldCheck, Zap } from 'lucide-react'
-import { labels, registries, type Settings, type Summary } from '../api'
+import { labels, registries, registryIcon, registryDescription, type Settings, type Summary } from '../api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button'
 import { ErrorMessage, Loading, Stat, useData } from '../common'
@@ -64,12 +64,12 @@ export function Overview({ onPackages }: { onPackages: () => void }) {
               <CardHeader>
                 <div className="registry-heading">
                   <span className={`registry-logo ${kind}`}>
-                    {kind === 'pypi' ? 'Py' : kind === 'npm' ? 'JS' : 'Rs'}
+                    {registryIcon(kind)}
                   </span>
                   <div>
                     <CardTitle>{labels[kind]}</CardTitle>
                     <CardDescription>
-                      {kind === 'cargo' ? 'crates.io' : kind === 'pypi' ? 'PyPI' : 'npm registry'}
+                      {registryDescription(kind)}
                     </CardDescription>
                   </div>
                   <span className={`badge ${config?.enabled === false ? 'muted-badge' : 'green'}`}>

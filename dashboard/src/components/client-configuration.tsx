@@ -2,6 +2,8 @@ import { type ClientConfig } from '../api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Code } from '../common'
 import { Database } from 'lucide-react'
+import { aptSources, aptCredentials, apkCredentials } from '../lib/distro-config'
+import type { Registry } from '../api'
 export function ClientConfiguration({
   config,
   username,
@@ -54,9 +56,34 @@ export function ClientConfiguration({
         <div className="info-box">
           <Database size={17} />
           <span>
-            Package metadata is fetched on demand. Wheels, tarballs, and crates are cached only when
-            a client requests them.
+            Files are cached only when requested. Offline use requires warmed files, and clients
+            continue enforcing distribution signatures and metadata expiry.
           </span>
+        </div>
+        {(['debian', 'ubuntu', 'ubuntu-ports'] as const).map((kind) => {
+          const distro = kind === 'debian' ? 'debian' : 'ubuntu'
+          const kinds: Registry[] = kind === 'ubuntu-ports' ? [kind] : [distro, `${distro}-security`]
+          const auth = aptCredentials(base, kinds, config, username)
+          return (
+            <div className="client-config-wide" key={kind}>
+              <h3>{kind === 'debian' ? 'Debian' : kind === 'ubuntu' ? 'Ubuntu · AMD64 / i386' : 'Ubuntu ports · ARM64 and other ports'} · APT</h3>
+              <p className="muted">Save as /etc/apt/sources.list.d/speculum.sources. Replace &lt;release&gt; with your installed release codename and replace matching existing sources to avoid bypassing the mirror.</p>
+              <Code>{aptSources(base, distro, kind === 'ubuntu-ports')}</Code>
+              {auth ? <>
+                <p className="muted">Save credentials as /etc/apt/auth.conf.d/speculum.conf, owned by root with permissions 0600. Use a generated token as the password.</p>
+                <Code>{auth}</Code>
+              </> : <p className="muted">Authentication is disabled for these mirrors; no credential file is needed.</p>}
+            </div>
+          )
+        })}
+        <div className="client-config-wide">
+          <h3>Alpine · APK</h3>
+          <p className="muted">Replace matching entries in /etc/apk/repositories. Replace &lt;branch&gt; with your installed branch, such as v3.23.</p>
+          <Code>{`${base}/alpine/<branch>/main\n${base}/alpine/<branch>/community`}</Code>
+          {config?.registries.alpine.auth_required !== false ? <>
+            <p className="muted">Save credentials in root’s .netrc with permissions 0600. APK also accepts a separate file selected with NETRC=/path/to/file.</p>
+            <Code>{apkCredentials(base, username)}</Code>
+          </> : <p className="muted">Authentication is disabled for Alpine; no credential file is needed.</p>}
         </div>
       </CardContent>
     </Card>

@@ -229,7 +229,7 @@ export function UsersPage() {
         description={
           edit === 'new'
             ? 'A temporary dashboard password will be generated. The user must change it before creating tokens.'
-            : 'Existing tokens stay valid. Update the username in pip or uv after renaming.'
+            : 'Existing tokens stay valid. Update the username in Python, APT, and APK clients after renaming.'
         }
       >
         <form className="form" onSubmit={save}>
@@ -286,7 +286,7 @@ export function UsersPage() {
         description={
           issued
             ? 'Copy this token now. It cannot be displayed again.'
-            : 'Use this token for any protected registry, including as the password for pip or uv.'
+            : 'Use this token for any protected registry, including as the password for Python, APT, or APK clients.'
         }
       >
         {issued ? (

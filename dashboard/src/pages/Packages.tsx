@@ -8,7 +8,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useState } from 'react'
-import { api, labels, registries, type Artifact, type Package } from '../api'
+import { api, labels, registries, isDistro, type Artifact, type Package } from '../api'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -41,7 +41,7 @@ export function Packages() {
       <div className="page-heading">
         <div>
           <h1>Packages</h1>
-          <p>Inspect your packages, their versions, and their footprint.</p>
+          <p>Inspect packages, repository files, and their footprint.</p>
         </div>
         <Button variant="outline" onClick={() => setRevision(revision + 1)}>
           Refresh
@@ -95,7 +95,7 @@ export function Packages() {
                 <TableCell>
                   <span className={`registry-tag ${item.registry}`}>{item.registry}</span>
                 </TableCell>
-                <TableCell>{number(item.versions)}</TableCell>
+                <TableCell>{isDistro(item.registry) ? '—' : number(item.versions)}</TableCell>
                 <TableCell>{bytes(item.stored_bytes)}</TableCell>
                 <TableCell>{number(item.requests)}</TableCell>
                 <TableCell>
@@ -202,7 +202,7 @@ function PackageDetails({ id, onBack }: { id: string; onBack: () => void }) {
       </Button>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">{labels[item.registry].toUpperCase()} PACKAGE</div>
+          <div className="eyebrow">{labels[item.registry].toUpperCase()} {isDistro(item.registry) ? 'REPOSITORY FILE' : 'PACKAGE'}</div>
           <h1>{item.name}</h1>
           <p>Last requested {date(item.last_access)}</p>
         </div>
@@ -216,7 +216,7 @@ function PackageDetails({ id, onBack }: { id: string; onBack: () => void }) {
         <Stat
           label="Stored files"
           value={number(item.files)}
-          detail={`${item.versions} versions · ${bytes(item.stored_bytes)}`}
+          detail={isDistro(item.registry) ? bytes(item.stored_bytes) : `${item.versions} versions · ${bytes(item.stored_bytes)}`}
         />
         <Stat
           label="Download requests"
@@ -247,10 +247,10 @@ function PackageDetails({ id, onBack }: { id: string; onBack: () => void }) {
         <Card className="version-card" key={version}>
           <CardHeader>
             <div className="section-heading">
-              <CardTitle>Version {version}</CardTitle>
+              <CardTitle>{isDistro(item.registry) ? 'Repository file' : `Version ${version}`}</CardTitle>
               <Button variant="ghost" size="sm" onClick={() => remove(version)}>
                 <Trash2 />
-                Delete version
+                {isDistro(item.registry) ? 'Delete file' : 'Delete version'}
               </Button>
             </div>
           </CardHeader>

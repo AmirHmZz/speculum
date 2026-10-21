@@ -3,7 +3,28 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, time::Duration};
 
-pub const REGISTRIES: [&str; 3] = ["pypi", "npm", "cargo"];
+pub const DISTROS: [&str; 6] = [
+    "debian",
+    "debian-security",
+    "ubuntu",
+    "ubuntu-security",
+    "ubuntu-ports",
+    "alpine",
+];
+pub const REGISTRIES: [&str; 9] = [
+    "pypi",
+    "npm",
+    "cargo",
+    "debian",
+    "debian-security",
+    "ubuntu",
+    "ubuntu-security",
+    "ubuntu-ports",
+    "alpine",
+];
+pub fn is_distro(kind: &str) -> bool {
+    DISTROS.contains(&kind)
+}
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ProxySettings {
@@ -40,6 +61,32 @@ impl Default for Settings {
             ("pypi", "https://pypi.org/simple/", "files.pythonhosted.org"),
             ("npm", "https://registry.npmjs.org/", "registry.npmjs.org"),
             ("cargo", "https://index.crates.io/", "static.crates.io"),
+            ("debian", "https://deb.debian.org/debian/", "deb.debian.org"),
+            (
+                "debian-security",
+                "https://deb.debian.org/debian-security/",
+                "deb.debian.org",
+            ),
+            (
+                "ubuntu",
+                "https://archive.ubuntu.com/ubuntu/",
+                "archive.ubuntu.com",
+            ),
+            (
+                "ubuntu-security",
+                "https://security.ubuntu.com/ubuntu/",
+                "security.ubuntu.com",
+            ),
+            (
+                "ubuntu-ports",
+                "https://ports.ubuntu.com/ubuntu-ports/",
+                "ports.ubuntu.com",
+            ),
+            (
+                "alpine",
+                "https://dl-cdn.alpinelinux.org/alpine/",
+                "dl-cdn.alpinelinux.org",
+            ),
         ]
         .into_iter()
         .map(|(kind, url, host)| {
@@ -85,6 +132,16 @@ pub fn http_url(value: &str) -> Result<Url> {
     Ok(url)
 }
 impl Settings {
+    /// Add new mirrors to saved configurations without replacing existing settings.
+    pub fn upgrade(&mut self) {
+        let defaults = Self::default();
+        for kind in DISTROS {
+            self.registries
+                .entry(kind.into())
+                .or_insert_with(|| defaults.registries[kind].clone());
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         let base = http_url(&self.public_base_url)?;
         if base.path() != "/" {
@@ -92,10 +149,12 @@ impl Settings {
                 "Public base URL must be an origin without a path",
             ));
         }
-        if self.registries.len() != 3
+        if self.registries.len() != REGISTRIES.len()
             || REGISTRIES.iter().any(|k| !self.registries.contains_key(*k))
         {
-            return Err(Error::bad("Configure pypi, npm, and cargo"));
+            return Err(Error::bad(
+                "Configure all supported registries and distribution mirrors",
+            ));
         }
         if !(1..=u32::MAX as u64).contains(&self.connect_timeout_seconds)
             || !(1..=u32::MAX as u64).contains(&self.download_timeout_seconds)

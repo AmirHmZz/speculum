@@ -23,6 +23,8 @@ import {
   setCsrf,
   labels,
   registries,
+  registryIcon,
+  registryDescription,
   type DashboardSession,
   type PersonalSummary,
   type PersonalPackage,
@@ -225,7 +227,7 @@ function UserOverview({ username }: { username: string }) {
         <Stat
           label="Packages requested"
           value={number(total.packages)}
-          detail="Across all three registries"
+          detail="Across all registries and distribution mirrors"
           icon={<Package size={16} />}
         />
       </div>
@@ -240,12 +242,12 @@ function UserOverview({ username }: { username: string }) {
               <CardHeader className="user-registry-header">
                 <div className="registry-heading">
                   <span className={`registry-logo ${kind}`}>
-                    {kind === 'pypi' ? 'Py' : kind === 'npm' ? 'JS' : 'Rs'}
+                    {registryIcon(kind)}
                   </span>
                   <div>
                     <CardTitle>{labels[kind]}</CardTitle>
                     <CardDescription>
-                      {kind === 'pypi' ? 'PyPI' : kind === 'npm' ? 'npm registry' : 'crates.io'}
+                      {registryDescription(kind)}
                     </CardDescription>
                   </div>
                   <span
@@ -526,7 +528,7 @@ function UserTokens() {
         description={
           issued
             ? 'Copy this token now. It cannot be displayed again.'
-            : 'Use the token as the password for pip or uv, or as the registry token for JavaScript and Cargo clients.'
+            : 'Use the token as the password for Python, APT, or APK clients, or as the registry token for JavaScript and Cargo clients.'
         }
       >
         {issued ? (

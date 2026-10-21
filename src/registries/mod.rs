@@ -1,4 +1,7 @@
+pub mod apk;
+pub mod apt;
 pub mod cargo;
+pub mod distro;
 pub mod npm;
 pub mod pypi;
 use crate::{App, cache, error::Result};

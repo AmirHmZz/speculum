@@ -178,7 +178,7 @@ pub async fn upstream(
     }
     Err(Error::upstream("Too many upstream redirects"))
 }
-struct FetchLog<'a> {
+pub(crate) struct FetchLog<'a> {
     registry: &'a str,
     resource_kind: &'static str,
     method: Method,
@@ -187,7 +187,12 @@ struct FetchLog<'a> {
     started: Instant,
 }
 impl<'a> FetchLog<'a> {
-    fn new(registry: &'a str, resource_kind: &'static str, method: Method, url: &str) -> Self {
+    pub(crate) fn new(
+        registry: &'a str,
+        resource_kind: &'static str,
+        method: Method,
+        url: &str,
+    ) -> Self {
         // Only retain safe URL components: queries can contain signed download credentials.
         let parsed = Url::parse(url).ok();
         let fetch = Self {
@@ -205,7 +210,7 @@ impl<'a> FetchLog<'a> {
         tracing::info!(registry, resource_kind, method=%fetch.method, host=%fetch.host, path=%fetch.path, "Upstream fetch started");
         fetch
     }
-    fn finish<T>(&self, result: &Result<T>, status: Option<u16>, bytes: u64) {
+    pub(crate) fn finish<T>(&self, result: &Result<T>, status: Option<u16>, bytes: u64) {
         let elapsed_ms = self.started.elapsed().as_millis() as u64;
         match result {
             Ok(_) => {
@@ -327,10 +332,17 @@ fn validate_metadata(kind: &str, content_type: &str, bytes: &[u8]) -> Result<()>
     }
     Ok(())
 }
-struct Temporary(PathBuf);
+pub(crate) struct Temporary(pub(crate) PathBuf);
+impl Temporary {
+    pub(crate) fn disarm(&mut self) {
+        self.0.clear();
+    }
+}
 impl Drop for Temporary {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 async fn download(
@@ -732,11 +744,46 @@ pub async fn serve(
             return Err(Error::not_found());
         }
     }
-    let modified = httpdate::fmt_http_date(
-        std::time::UNIX_EPOCH
-            + std::time::Duration::from_secs(item.downloaded_at.unwrap_or(0).max(0) as u64),
-    );
-    let etag = format!("\"{}-{}\"", item.id, item.downloaded_at.unwrap_or(0));
+    let descriptor = FileDescriptor {
+        path: item.path(&app),
+        modified: httpdate::fmt_http_date(
+            std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(item.downloaded_at.unwrap_or(0).max(0) as u64),
+        ),
+        etag: format!("\"{}-{}\"", item.id, item.downloaded_at.unwrap_or(0)),
+    };
+    cached_response(
+        app.clone(),
+        item,
+        headers,
+        method,
+        user_id,
+        lease,
+        descriptor,
+    )
+    .await
+}
+
+pub(crate) struct FileDescriptor {
+    pub path: PathBuf,
+    pub etag: String,
+    pub modified: String,
+}
+
+pub(crate) async fn cached_response(
+    app: Arc<App>,
+    item: Artifact,
+    headers: HeaderMap,
+    method: Method,
+    user_id: Option<String>,
+    lease: OwnedRwLockReadGuard<()>,
+    descriptor: FileDescriptor,
+) -> Result<Response> {
+    let FileDescriptor {
+        path,
+        etag,
+        modified,
+    } = descriptor;
     let unchanged = matches_etag(&headers, &etag)
         || !headers.contains_key("if-none-match")
             && headers
@@ -769,7 +816,7 @@ pub async fn serve(
     let body = if method == Method::HEAD || unchanged {
         Body::empty()
     } else {
-        let mut file = tokio::fs::File::open(item.path(&app)).await?;
+        let mut file = tokio::fs::File::open(path).await?;
         file.seek(std::io::SeekFrom::Start(start)).await?;
         let mut delivery = Delivery {
             app: app.clone(),
@@ -830,10 +877,17 @@ pub async fn evict(app: &App, id: &str, expired_only: bool) -> Result<bool> {
     if expired_only && item.valid(&app.snapshot().await, app.now()) {
         return Ok(false);
     }
-    match tokio::fs::remove_file(item.path(app)).await {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    let path = if crate::config::is_distro(&item.registry) {
+        crate::registries::distro::evicted_path(app, id).await?
+    } else {
+        Some(item.path(app))
+    };
+    if let Some(path) = path {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     sqlx::query("UPDATE artifacts SET downloaded_at=NULL,size=0 WHERE id=?")
         .bind(id)

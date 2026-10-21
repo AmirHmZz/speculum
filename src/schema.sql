@@ -13,3 +13,4 @@ CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, key TEXT NOT NULL UNI
 CREATE INDEX IF NOT EXISTS artifacts_package ON artifacts(package_id,version);
 CREATE INDEX IF NOT EXISTS artifacts_downloaded ON artifacts(registry,downloaded_at);
 CREATE INDEX IF NOT EXISTS metadata_registry ON metadata(registry);
+CREATE TABLE IF NOT EXISTS distro_resources (artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE, relative_path TEXT NOT NULL, immutable INTEGER NOT NULL, generation TEXT, etag TEXT, last_modified TEXT, validated_at INTEGER, body_hash TEXT);

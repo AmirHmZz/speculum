@@ -1,6 +1,17 @@
-export type Registry = 'pypi' | 'npm' | 'cargo'
-export const registries: Registry[] = ['pypi', 'npm', 'cargo']
-export const labels: Record<Registry, string> = { pypi: 'Python', npm: 'JavaScript', cargo: 'Rust' }
+export const registries = ['pypi', 'npm', 'cargo', 'debian', 'debian-security', 'ubuntu', 'ubuntu-security', 'ubuntu-ports', 'alpine'] as const
+export type Registry = (typeof registries)[number]
+export const labels: Record<Registry, string> = {
+  pypi: 'Python', npm: 'JavaScript', cargo: 'Rust', debian: 'Debian',
+  'debian-security': 'Debian security', ubuntu: 'Ubuntu', 'ubuntu-security': 'Ubuntu security',
+  'ubuntu-ports': 'Ubuntu ports', alpine: 'Alpine',
+}
+export const isDistro = (kind: Registry) => kind !== 'pypi' && kind !== 'npm' && kind !== 'cargo'
+const languageRegistries: Partial<Record<Registry, { icon: string; description: string }>> = {
+  pypi: { icon: 'Py', description: 'PyPI' }, npm: { icon: 'JS', description: 'npm registry' },
+  cargo: { icon: 'Rs', description: 'crates.io' },
+}
+export const registryIcon = (kind: Registry) => languageRegistries[kind]?.icon ?? (kind === 'alpine' ? 'Apk' : 'Apt')
+export const registryDescription = (kind: Registry) => languageRegistries[kind]?.description ?? (kind === 'alpine' ? 'APK repository' : 'APT repository')
 export interface ProxyConfig {
   url: string
   username: string | null

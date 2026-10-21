@@ -118,11 +118,13 @@ impl App {
         let saved: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE id=1")
             .fetch_optional(&db)
             .await?;
-        let settings = if let Some(value) = saved {
+        let mut settings: Settings = if let Some(value) = saved {
             serde_json::from_slice(&secret.decrypt(&value).map_err(|e| anyhow::anyhow!(e.1))?)?
         } else {
             Settings::default()
         };
+        settings.upgrade();
+        crate::registries::distro::startup(&db, dir).await?;
         let clients = clients(&settings).map_err(|e| anyhow::anyhow!(e.1))?;
         if sqlx::query("SELECT id FROM admin")
             .fetch_optional(&db)
@@ -143,7 +145,7 @@ impl App {
         let encrypted = secret
             .encrypt(&serde_json::to_vec(&settings)?)
             .map_err(|e| anyhow::anyhow!(e.1))?;
-        sqlx::query("INSERT OR IGNORE INTO settings(id,value) VALUES(1,?)")
+        sqlx::query("INSERT INTO settings(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value")
             .bind(encrypted)
             .execute(&db)
             .await?;

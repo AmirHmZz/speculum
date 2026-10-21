@@ -897,9 +897,17 @@ h2 {
 }
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 20px;
 }
+.registry-select-dot { background: #2d9b8e; }
+.registry-logo[class*='debian'], .registry-tag[class*='debian'] { background: #a5113520; color: #c52c55; }
+.registry-logo[class*='ubuntu'], .registry-tag[class*='ubuntu'] { background: #e9542020; color: #d94e1e; }
+.registry-logo.alpine, .registry-tag.alpine { background: #0d597f20; color: #2686b5; }
+.registry-heading > div { min-width: 0; }
+.registry-heading .registry-logo { flex-shrink: 0; }
+.package-link { overflow-wrap: anywhere; text-align: start; }
 .tabs button {
   display: flex;
   align-items: center;

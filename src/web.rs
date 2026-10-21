@@ -57,7 +57,7 @@ pub fn router(app: Arc<App>) -> Router {
             app.clone(),
             auth::user_guard,
         ));
-    let mirrors = Router::new()
+    let mut mirrors = Router::new()
         .route("/pypi", get(mirror_root))
         .route("/pypi/", get(mirror_root))
         .route("/pypi/simple", get(mirror_root))
@@ -86,7 +86,17 @@ pub fn router(app: Arc<App>) -> Router {
         .route(
             "/cargo/crates/{name}/{version}/download",
             get(registries::cargo::download),
-        )
+        );
+    for kind in crate::config::DISTROS {
+        mirrors = mirrors
+            .route(&format!("/{kind}"), get(registries::distro::root))
+            .route(&format!("/{kind}/"), get(registries::distro::root))
+            .route(
+                &format!("/{kind}/{{*path}}"),
+                get(registries::distro::resource),
+            );
+    }
+    let mirrors = mirrors
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
             auth::mirror_guard,

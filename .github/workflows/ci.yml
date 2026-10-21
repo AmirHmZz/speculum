@@ -78,6 +78,7 @@ jobs:
         working-directory: dashboard
         run: |
           bun install --frozen-lockfile
+          bun test
           bun run build
       - name: Check Rust formatting
         run: cargo fmt --check
@@ -89,6 +90,8 @@ jobs:
         run: cargo build --locked
       - name: Test real package managers and offline caching
         run: python tests/native_clients.py
+      - name: Test signed APT and APK repositories and offline installs
+        run: python tests/distro_clients.py
 
   container:
     name: Build and smoke-test container
@@ -106,6 +109,8 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f compose.yaml -f compose.build.yaml config --quiet
+          docker compose -f compose.yaml -f compose.local.yaml config --quiet
+          docker compose -f compose.yaml -f compose.build.yaml -f compose.local.yaml config --quiet
       - name: Build image for testing
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

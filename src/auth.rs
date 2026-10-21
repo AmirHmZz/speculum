@@ -278,7 +278,7 @@ pub async fn mirror_guard(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     let identity = if let Some(encoded) = authorization.strip_prefix("Basic ") {
-        if kind == "pypi" && encoded.len() <= 1024 {
+        if (kind == "pypi" || crate::config::is_distro(kind)) && encoded.len() <= 1024 {
             if let Ok(bytes) = STANDARD.decode(encoded) {
                 if let Ok(credentials) = String::from_utf8(bytes) {
                     if let Some((username, token)) = credentials.split_once(':') {
@@ -324,7 +324,7 @@ pub async fn mirror_guard(
                 )
                 .parse()
                 .unwrap()
-            } else if kind == "pypi" {
+            } else if kind == "pypi" || crate::config::is_distro(kind) {
                 "Basic realm=\"Speculum\"".parse().unwrap()
             } else {
                 "Bearer realm=\"Speculum\"".parse().unwrap()

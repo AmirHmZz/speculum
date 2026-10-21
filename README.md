@@ -1,6 +1,6 @@
 # Speculum
 
-A self-hosted, on-demand package mirror for **PyPI, npm, and crates.io**, with a
+A self-hosted, on-demand package mirror for **PyPI, npm, crates.io, Debian, Ubuntu, and Alpine**, with a
 React/shadcn admin and user dashboards embedded in a single Rust service. Speculum listens
 on HTTP; place your own TLS-terminating reverse proxy in front of it.
 
@@ -25,8 +25,8 @@ on HTTP; place your own TLS-terminating reverse proxy in front of it.
 The container listens on `0.0.0.0:8080`, accessible within its Docker network.
 Compose does not publish any ports to the host. Attach your reverse proxy to the
 same Docker network and forward to `http://speculum:8080`, preserving the request
-path. Do not strip the `/pypi/`, `/npm/`, `/cargo/`, or `/api/` prefixes. Allow enough request time
-for a cold large artifact: it is verified completely before being served.
+path. Preserve all registry, distro, and `/api/` prefixes. Allow enough request time
+for a cold large artifact: it is downloaded completely before being served.
 
 The named `speculum-data` volume stores configuration, users, sessions, statistics,
 metadata, artifacts, and `secret.key`. Runtime settings are edited through the
@@ -67,6 +67,16 @@ docker compose -f compose.yaml -f compose.build.yaml up --build -d --wait
 
 This builds `speculum:local` and preserves the same service settings and data
 volume. The standard Compose file never builds from source.
+
+For local access without a reverse proxy, also include `compose.local.yaml`:
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml -f compose.local.yaml up --build -d --wait
+```
+
+Open `http://127.0.0.1:8080/admin`. This publishes the port only on localhost.
+Include the same override files in subsequent Compose commands. To use the
+published image locally, omit `-f compose.build.yaml` and `--build`.
 
 ## GitHub CI and container publishing
 
@@ -256,6 +266,105 @@ URL and authentication flag. Index entries and crate files are protected when
 Cargo authentication is enabled. Only the sparse index is supported. Git/path
 dependencies and package publishing are outside the mirror's scope.
 
+### Debian and Ubuntu · APT
+
+The archive roots are `/debian/`, `/debian-security/`, `/ubuntu/`,
+`/ubuntu-security/`, and `/ubuntu-ports/`. Upstream URLs, proxies, authentication,
+freshness, and retention are configured independently in Settings. Ubuntu ports
+serves ARM64 and the other ports architectures; use `/ubuntu/` for AMD64/i386.
+Suites, components, and architectures are selected by the client.
+
+Replace matching existing sources with `/etc/apt/sources.list.d/speculum.sources`.
+For Debian, replace `<release>` with your installed release codename:
+
+```text
+Types: deb
+URIs: https://mirror.example.com/debian/
+Suites: <release> <release>-updates <release>-backports
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: https://mirror.example.com/debian-security/
+Suites: <release>-security
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+```
+
+For Ubuntu, use `/ubuntu/` and `/ubuntu-security/`, components
+`main restricted universe multiverse`, and
+`/usr/share/keyrings/ubuntu-archive-keyring.gpg`. For Ubuntu ports, use
+`/ubuntu-ports/` for all suites, including `<release>-security`.
+Use `Types: deb deb-src` if source packages are also needed.
+
+When authentication is enabled, save the following in
+`/etc/apt/auth.conf.d/speculum.conf`, owned by root with permissions `0600`:
+
+```text
+machine https://mirror.example.com/debian/
+login <username>
+password <token>
+
+machine https://mirror.example.com/debian-security/
+login <username>
+password <token>
+```
+
+Add matching path-specific entries for each protected Ubuntu mirror you use.
+The password is a package token, not the dashboard password. Anonymous mirrors
+need no credential entry. Both dashboards provide copyable configurations.
+
+### Alpine · APK
+
+Replace matching entries in `/etc/apk/repositories`, using your installed branch
+in place of `<branch>` (for example `v3.23`):
+
+```text
+https://mirror.example.com/alpine/<branch>/main
+https://mirror.example.com/alpine/<branch>/community
+```
+
+For protected mirrors, save root's `.netrc` with permissions `0600`, or select a
+separate file using `NETRC=/path/to/file` when invoking APK:
+
+```text
+machine mirror.example.com
+login <username>
+password <token>
+```
+
+The `.netrc` machine is the hostname, without a scheme, port, or repository path.
+APK 2 and APK 3 clients retain their distribution keys and signature checks.
+
+### Distribution cache behavior
+
+APT and APK files are served byte-for-byte without rewriting signatures,
+decompressing indexes, or importing signing keys into Speculum. Native clients
+verify signatures and package checksums; Speculum checks complete transfers and
+SHA-256/SHA-512 APT `by-hash` URLs. The cache does not claim server-side signature
+verification. Repository indexes are streamed to disk, including files larger
+than 64 MiB. Inventory entries use repository-relative paths and mark indexes
+and signatures as metadata.
+
+Mutable indexes default to 300 seconds of freshness, then use upstream
+ETag/Last-Modified revalidation. `Cache-Control: no-cache` forces revalidation.
+APT `pool/` files, `by-hash` indexes, and versioned APK packages remain cached
+until configured retention expires or an administrator clears them. Failed
+refreshes retain the previous complete generation; connection failures and
+upstream 5xx responses permit a stale index response. Upstream 404s remain 404s.
+When a client forces revalidation of an immutable cached file, connection/5xx
+failures also fall back to that complete file while it remains within retention.
+
+Only previously requested files are available offline. Expired signed metadata
+can still be rejected by the client; signature and expiry checks remain enabled.
+No repository crawl, full synchronization, or snapshot is performed.
+
+New mirror settings and the additive distro cache table are populated at startup
+without resetting existing users, tokens, settings, or cached artifacts. TLS
+continues to terminate at your existing reverse proxy.
+Keep a pre-upgrade volume backup for rollback: older binaries that recognize
+only PyPI/npm/Cargo cannot read the expanded mirror settings.
+
 ## Cache and proxy behavior
 
 - Metadata requests never prefetch package archives. Clients resolve normal
@@ -290,8 +399,9 @@ dependencies and package publishing are outside the mirror's scope.
   Client credentials, cookies, and admin sessions are never forwarded upstream.
 
 Overview and package pages show persistent lifetime request/hit/miss/download/
-failure and bandwidth totals. HEAD and index metadata requests do not count as
-file downloads; Python metadata sidecar GETs do. Upstream traffic includes bytes
+failure and bandwidth totals. HEAD requests do not count as file downloads.
+PyPI/npm/Cargo index metadata requests do not count as file downloads; Python
+sidecars and distro repository file GETs do. Upstream traffic includes bytes
 received during failed downloads. Client traffic counts file bytes emitted by
 the response stream; it is not an acknowledgement of client receipt. Storage
 totals reflect files currently on disk, including sidecars, and can briefly
@@ -321,7 +431,8 @@ delivered bytes. Deleting a user preserves global traffic totals.
 Speculum does not run database migrations. Changes to existing table schemas
 require a fresh application database. Token usage is stored in a separate
 table created automatically at startup, so enabling this feature preserves
-existing users and tokens.
+existing users and tokens. Distro cache resources use the same additive-table
+approach; existing configuration gains the new mirror defaults without a reset.
 
 ## Local development and checks
 
@@ -365,6 +476,15 @@ using an existing Python interpreter:
 ```text
 uv run --no-project --python 3.12 tests/native_clients.py
 ```
+
+`python tests/distro_clients.py` additionally uses disposable Docker clients
+(Debian 12, Ubuntu 24.04, Alpine 3.22/APK 2, and Alpine 3.23/APK 3) and generated,
+signed APT/APK repositories. Docker and public images/tool downloads are needed
+for fixture setup; tested installs have no public repository fallback. The suite
+checks signatures, tampered packages, clean-cache offline installs, and uncached
+offline failures. Signed fixture generation is cached under ignored
+`tests/.runtime/distro-fixtures/`, keyed by fixture scripts. `--keep` leaves a
+populated preview running until interrupted.
 
 Use `--keep` for a populated local dashboard preview with disposable fixture
 credentials. Rust integration tests additionally cover controlled-clock expiry,
