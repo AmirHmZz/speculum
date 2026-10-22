@@ -104,7 +104,14 @@ async fn fixture(State(state): State<Arc<Fixture>>, request: Request) -> Respons
             json!({"name":name,"versions":{version:{"name":name,"version":version,"dist":{"tarball":format!("{}/files/demo.tgz",state.base),"integrity":format!("sha512-{}",STANDARD.encode(sha2::Sha512::digest(b"fixture archive")))}}}})
         }
         "/index/config.json" => {
-            json!({"dl":format!("{}/files/{{crate}}-{{version}}.crate",state.base)})
+            return (
+                [("content-type", "application/octet-stream")],
+                serde_json::to_vec_pretty(
+                    &json!({"dl":format!("{}/files/{{crate}}-{{version}}.crate",state.base)}),
+                )
+                .unwrap(),
+            )
+                .into_response();
         }
         "/index/de/mo/demo" => {
             json!({"name":"demo","vers":"1.0.0","deps":[],"cksum":hash,"features":{},"yanked":false})

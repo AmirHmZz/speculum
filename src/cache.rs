@@ -298,7 +298,7 @@ pub async fn metadata(
         let modified = response.headers().get("last-modified").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let mut bytes = Vec::new(); let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await { let chunk = chunk.map_err(|_| Error::upstream("Interrupted metadata response"))?; transferred += chunk.len() as u64; if bytes.len() + chunk.len() > 64 * 1024 * 1024 { return Err(Error::upstream("Metadata exceeds 64 MiB limit")); } bytes.extend_from_slice(&chunk); }
-        validate_metadata(kind, &content_type, &bytes)?;
+        validate_metadata(kind, url, &content_type, &bytes)?;
         sqlx::query("INSERT INTO metadata(key,registry,body,content_type,etag,last_modified,fetched_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET body=excluded.body,content_type=excluded.content_type,etag=excluded.etag,last_modified=excluded.last_modified,fetched_at=excluded.fetched_at")
             .bind(&key).bind(kind).bind(&bytes).bind(&content_type).bind(etag).bind(modified).bind(app.now()).execute(&app.db).await?;
         Ok((bytes,content_type))
@@ -314,13 +314,17 @@ pub async fn metadata(
         Err(error) => Err(error),
     }
 }
-fn validate_metadata(kind: &str, content_type: &str, bytes: &[u8]) -> Result<()> {
-    if (kind == "npm" || content_type.contains("json"))
+fn validate_metadata(kind: &str, url: &str, content_type: &str, bytes: &[u8]) -> Result<()> {
+    // Cargo config is a JSON document; crate index resources are JSON Lines.
+    // Upstream content types do not reliably distinguish these resources.
+    let cargo_config =
+        kind == "cargo" && Url::parse(url).is_ok_and(|url| url.path().ends_with("/config.json"));
+    if (kind == "npm" || cargo_config || (kind != "cargo" && content_type.contains("json")))
         && serde_json::from_slice::<serde_json::Value>(bytes).is_err()
     {
         return Err(Error::upstream("Invalid upstream JSON metadata"));
     }
-    if kind == "cargo" && !content_type.contains("json") {
+    if kind == "cargo" && !cargo_config {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| Error::upstream("Invalid Cargo index encoding"))?;
         if text
@@ -332,6 +336,7 @@ fn validate_metadata(kind: &str, content_type: &str, bytes: &[u8]) -> Result<()>
     }
     Ok(())
 }
+
 pub(crate) struct Temporary(pub(crate) PathBuf);
 impl Temporary {
     pub(crate) fn disarm(&mut self) {
@@ -922,4 +927,61 @@ pub async fn cleanup(app: &App) -> Result<()> {
         .execute(&app.db)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::validate_metadata;
+
+    #[test]
+    fn cargo_config_is_json_regardless_of_content_type() {
+        let url = "https://example.test/nested/index/config.json?token=example";
+        for content_type in [
+            "application/octet-stream",
+            "application/json",
+            "text/plain",
+            "",
+        ] {
+            assert!(
+                validate_metadata(
+                    "cargo",
+                    url,
+                    content_type,
+                    b"{\n  \"dl\": \"https://example.test/crates\"\n}\n"
+                )
+                .is_ok()
+            );
+            for invalid in [b"{\n invalid\n}".as_slice(), b"{}\n{}\n"] {
+                assert!(validate_metadata("cargo", url, content_type, invalid).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn cargo_index_is_json_lines_regardless_of_content_type() {
+        let url = "https://example.test/nested/index/de/mo/demo";
+        for content_type in [
+            "application/octet-stream",
+            "application/json",
+            "text/plain",
+            "",
+        ] {
+            assert!(
+                validate_metadata(
+                    "cargo",
+                    url,
+                    content_type,
+                    b"{\"vers\":\"1.0.0\"}\n{\"vers\":\"2.0.0\"}\n"
+                )
+                .is_ok()
+            );
+            for invalid in [
+                b"{}\ninvalid\n".as_slice(),
+                b"{\n  \"vers\": \"1.0.0\"\n}",
+                b"\xff",
+            ] {
+                assert!(validate_metadata("cargo", url, content_type, invalid).is_err());
+            }
+        }
+    }
 }
